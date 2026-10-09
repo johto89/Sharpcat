@@ -229,8 +229,12 @@ namespace SvcUtil
                         string iArg = args[++i];
                         if (!int.TryParse(iArg, out _targetPid))
                         {
-                            // Treat as process name — resolve to PID
-                            var procs = Process.GetProcessesByName(iArg);
+                            // Strip .exe suffix if present
+                            string iName = iArg;
+                            if (iName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                                iName = iName.Substring(0, iName.Length - 4);
+
+                            var procs = Process.GetProcessesByName(iName);
                             if (procs.Length > 0)
                                 _targetPid = procs[0].Id;
                             else
@@ -247,8 +251,12 @@ namespace SvcUtil
                         string ppArg = args[++i];
                         if (!int.TryParse(ppArg, out _ppidSpoof))
                         {
-                            // Treat as process name — find PID
-                            _ppidSpoof = PpidSpoof.FindParentPid(ppArg);
+                            // Strip .exe suffix if present
+                            string ppName = ppArg;
+                            if (ppName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                                ppName = ppName.Substring(0, ppName.Length - 4);
+
+                            _ppidSpoof = PpidSpoof.FindParentPid(ppName);
                             if (_ppidSpoof == 0)
                                 return false;
                         }
