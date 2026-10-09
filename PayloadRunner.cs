@@ -27,7 +27,7 @@ namespace SvcUtil
             try
             {
                 // Step 1: Allocate RW memory
-                baseAddr = DynInvoke.VirtualAlloc(
+                baseAddr = W.MC(
                     IntPtr.Zero, size,
                     MEM_COMMIT | MEM_RESERVE,
                     PAGE_READWRITE);
@@ -40,11 +40,11 @@ namespace SvcUtil
 
                 // Step 3: Change protection to RX
                 uint oldProtect;
-                if (!DynInvoke.VirtualProtect(
+                if (!W.MB(
                         baseAddr, (UIntPtr)data.Length,
                         PAGE_EXECUTE_READ, out oldProtect))
                 {
-                    DynInvoke.VirtualFree(baseAddr, UIntPtr.Zero, MEM_RELEASE);
+                    W.MD(baseAddr, UIntPtr.Zero, MEM_RELEASE);
                     return false;
                 }
 
@@ -64,7 +64,7 @@ namespace SvcUtil
             {
                 // Clean up
                 if (baseAddr != IntPtr.Zero)
-                    DynInvoke.VirtualFree(baseAddr, UIntPtr.Zero, MEM_RELEASE);
+                    W.MD(baseAddr, UIntPtr.Zero, MEM_RELEASE);
             }
         }
     }

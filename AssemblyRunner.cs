@@ -114,7 +114,7 @@ namespace SvcUtil
                 return true;
             }
 
-            ScanPatch.PatchCurrentProcess();
+            Ctx.Run();
 
             Exception runError = null;
             string capturedOutput = null;

