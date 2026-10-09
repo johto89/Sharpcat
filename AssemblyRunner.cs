@@ -1,3 +1,4 @@
+#if EXEC_ASM
 using System;
 using System.IO;
 using System.Text;
@@ -277,3 +278,4 @@ namespace SvcUtil
         }
     }
 }
+#endif
