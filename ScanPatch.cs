@@ -102,7 +102,7 @@ namespace SvcUtil
                         0x40, out oldProtect))
                     return false;
 
-                Marshal.WriteByte(pFunc, BuildRet());
+                unsafe { *(byte*)pFunc.ToPointer() = BuildRet(); }
 
                 uint ignored;
                 DynInvoke.VirtualProtect(pFunc, (UIntPtr)1,
@@ -141,7 +141,12 @@ namespace SvcUtil
                         0x40, out oldProtect))
                     return false;
 
-                Marshal.Copy(patch, 0, pFunc, patch.Length);
+                unsafe
+                {
+                    byte* p = (byte*)pFunc.ToPointer();
+                    for (int i = 0; i < patch.Length; i++)
+                        p[i] = patch[i];
+                }
 
                 uint ignored;
                 DynInvoke.VirtualProtect(pFunc, (UIntPtr)patch.Length,
