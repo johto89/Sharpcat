@@ -96,8 +96,9 @@ namespace SvcUtil
 
             // ── Shell mode ──────────────────────────────────────────────
 
-            if (!_scanExplicit && Ctx.Chk(_command))
-                _scanPatch = true;
+            // AMSI patch only when explicitly requested (-a / --amsi).
+            // Per-command execution spawns child processes — patching
+            // the parent has no effect on them.
 
             if (_listenMode)
                 RunListenMode();

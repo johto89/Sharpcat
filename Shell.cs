@@ -30,7 +30,7 @@ namespace SvcUtil
             if (patchScan)
                 Ctx.Run();
 
-            bool usePwsh = patchScan && Ctx.Chk(commandLine);
+            bool usePwsh = Ctx.Chk(commandLine);
 
             var session = new SessionData
             {
