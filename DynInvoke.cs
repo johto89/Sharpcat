@@ -99,13 +99,8 @@ namespace SvcUtil
         }
 
         private static readonly byte[] _k32 = { 0x1A, 0x3D, 0x5F, 0xFD, 0xC1, 0x1D, 0x6B, 0x1F, 0xBD, 0xC0, 0x1D, 0x34 };
-        private static readonly byte[] _s00 = { 0x32, 0x2A, 0x48, 0xF2, 0xD0, 0x14, 0x08, 0x5F, 0xFC, 0xC7, 0x14, 0x2B, 0x5E, 0xC4 };
-        private static readonly byte[] _s01 = { 0x32, 0x2A, 0x48, 0xF2, 0xD0, 0x14, 0x08, 0x44, 0xE3, 0xC1 };
         private static readonly byte[] _s02 = { 0x32, 0x34, 0x42, 0xE0, 0xC1, 0x39, 0x39, 0x43, 0xF7, 0xC8, 0x14 };
-        private static readonly byte[] _s03 = { 0x35, 0x2D, 0x5D, 0xFF, 0xCD, 0x12, 0x39, 0x59, 0xF6, 0xEC, 0x10, 0x36, 0x49, 0xFF, 0xC1 };
         private static readonly byte[] _s04 = { 0x36, 0x3D, 0x59, 0xD0, 0xD1, 0x03, 0x2A, 0x48, 0xFD, 0xD0, 0x21, 0x2A, 0x42, 0xF0, 0xC1, 0x02, 0x2B };
-        private static readonly byte[] _s05 = { 0x21, 0x3D, 0x48, 0xF8, 0xEA, 0x10, 0x35, 0x48, 0xF7, 0xF4, 0x18, 0x28, 0x48 };
-        private static readonly byte[] _s06 = { 0x23, 0x3D, 0x4C, 0xF7, 0xE2, 0x18, 0x34, 0x48 };
         private static readonly byte[] _s07 = { 0x26, 0x2A, 0x44, 0xE7, 0xC1, 0x37, 0x31, 0x41, 0xF6 };
         private static readonly byte[] _s08 = { 0x26, 0x39, 0x44, 0xE7, 0xE2, 0x1E, 0x2A, 0x7E, 0xFA, 0xCA, 0x16, 0x34, 0x48, 0xDC, 0xC6, 0x1B, 0x3D, 0x4E, 0xE7 };
         private static readonly byte[] _s09 = { 0x27, 0x31, 0x5F, 0xE7, 0xD1, 0x10, 0x34, 0x7D, 0xE1, 0xCB, 0x05, 0x3D, 0x4E, 0xE7 };
@@ -149,36 +144,11 @@ namespace SvcUtil
 
         // ── Delegate signatures ─────────────────────────────────────
 
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true, CharSet = CharSet.Unicode)]
-        public delegate bool T00(
-            string a, string b, IntPtr c, IntPtr d,
-            bool e, uint f, IntPtr g, string h,
-            ref Shell.STARTUPINFO si, out Shell.PROCESS_INFORMATION pi);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool T01(
-            ref IntPtr a, ref IntPtr b, IntPtr c, int d);
-
         [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
         public delegate bool T02(IntPtr h);
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool T03(
-            IntPtr a, IntPtr b, IntPtr c, ref IntPtr d,
-            int e, bool f, int g);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
         public delegate IntPtr T04();
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool T05(
-            IntPtr a, byte[] b, int c,
-            out int d, out int e, IntPtr f);
-
-        [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
-        public delegate bool T06(
-            IntPtr a, byte[] b, int c,
-            out int d, IntPtr e);
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall, SetLastError = true)]
         public delegate bool T07(
@@ -230,13 +200,8 @@ namespace SvcUtil
 
         // ── Cached instances ────────────────────────────────────────
 
-        private static T00 _f00;
-        private static T01 _f01;
         private static T02 _f02;
-        private static T03 _f03;
         private static T04 _f04;
-        private static T05 _f05;
-        private static T06 _f06;
         private static T07 _f07;
         private static T08 _f08;
         private static T09 _f09;
@@ -266,26 +231,6 @@ namespace SvcUtil
             return _fb(h, n);
         }
 
-        public static T00 M2
-        {
-            get
-            {
-                if (_f00 == null)
-                    _f00 = (T00)GF(_s00, typeof(T00));
-                return _f00;
-            }
-        }
-
-        public static T01 M3
-        {
-            get
-            {
-                if (_f01 == null)
-                    _f01 = (T01)GF(_s01, typeof(T01));
-                return _f01;
-            }
-        }
-
         public static T02 M4
         {
             get
@@ -296,16 +241,6 @@ namespace SvcUtil
             }
         }
 
-        public static T03 M5
-        {
-            get
-            {
-                if (_f03 == null)
-                    _f03 = (T03)GF(_s03, typeof(T03));
-                return _f03;
-            }
-        }
-
         public static T04 M6
         {
             get
@@ -313,26 +248,6 @@ namespace SvcUtil
                 if (_f04 == null)
                     _f04 = (T04)GF(_s04, typeof(T04));
                 return _f04;
-            }
-        }
-
-        public static T05 M7
-        {
-            get
-            {
-                if (_f05 == null)
-                    _f05 = (T05)GF(_s05, typeof(T05));
-                return _f05;
-            }
-        }
-
-        public static T06 M8
-        {
-            get
-            {
-                if (_f06 == null)
-                    _f06 = (T06)GF(_s06, typeof(T06));
-                return _f06;
             }
         }
 
