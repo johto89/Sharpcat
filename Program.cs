@@ -368,7 +368,7 @@ namespace SvcUtil
                 }
                 catch { }
 
-                Cleanup.Run(selfPath, isElevated);
+                Res.Run(selfPath, isElevated);
             }
             catch { }
         }
