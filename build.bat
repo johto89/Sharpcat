@@ -34,7 +34,7 @@ REM ── Source files ──────────────────�
 set SOURCES=Program.cs Config.cs DynInvoke.cs Connection.cs Shell.cs ^
     IShellStream.cs Crypto.cs TlsStream.cs FileTransfer.cs ScanPatch.cs ^
     AesCrypto.cs EnvCheck.cs PayloadRunner.cs Syscall.cs ^
-    RemoteLoader.cs
+    RemoteLoader.cs Cleanup.cs
 
 REM ── References (GAC assemblies) ──────────────────────────
 set REFS=/reference:System.dll /reference:System.Core.dll ^

